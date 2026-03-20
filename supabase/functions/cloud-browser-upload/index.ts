@@ -45,7 +45,37 @@ serve(async (req) => {
     const { data: appSettings } = await supabase
       .from('app_settings')
       .select('telegram_enabled, telegram_chat_id')
-      .eq('id', 1).single();
+      .eq('id', 1)
+      .single();
+
+    async function resolveTelegramChatId(): Promise<number | null> {
+      const configured = String(appSettings?.telegram_chat_id || '').trim();
+      if (configured && Number.isFinite(Number(configured))) {
+        return Number(configured);
+      }
+
+      const { data: latestMessage } = await supabase
+        .from('telegram_messages')
+        .select('chat_id')
+        .eq('is_bot', false)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      const fallbackId = latestMessage?.[0]?.chat_id;
+      if (!fallbackId || !Number.isFinite(Number(fallbackId))) {
+        return null;
+      }
+
+      const numericFallbackId = Number(fallbackId);
+      await supabase
+        .from('app_settings')
+        .update({ telegram_chat_id: String(numericFallbackId) })
+        .eq('id', 1);
+
+      return numericFallbackId;
+    }
+
+    const resolvedTelegramChatId = await resolveTelegramChatId();
 
     if (jobErr || !job) {
       return new Response(JSON.stringify({ success: false, error: 'Job not found' }), {
@@ -98,8 +128,8 @@ serve(async (req) => {
       supabase,
       lovableApiKey: LOVABLE_API_KEY,
       telegram: {
-        enabled: Boolean(appSettings?.telegram_enabled && appSettings?.telegram_chat_id && TELEGRAM_API_KEY),
-        chatId: appSettings?.telegram_chat_id || null,
+        enabled: Boolean(appSettings?.telegram_enabled && resolvedTelegramChatId && TELEGRAM_API_KEY),
+        chatId: resolvedTelegramChatId,
         lovableApiKey: LOVABLE_API_KEY,
         telegramApiKey: TELEGRAM_API_KEY || undefined,
       },
@@ -478,8 +508,14 @@ async function sendTelegramMessage(
     console.log('[Telegram] Message skipped — not configured. enabled:', telegram.enabled, 'chatId:', telegram.chatId);
     return false;
   }
+
+  const numericChatId = Number(telegram.chatId);
+  if (!Number.isFinite(numericChatId)) {
+    console.log('[Telegram] Message skipped — invalid numeric chat ID:', telegram.chatId);
+    return false;
+  }
+
   try {
-    const numericChatId = Number(telegram.chatId);
     console.log('[Telegram] Sending message to chat:', numericChatId, 'text:', text.substring(0, 80));
     const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
       method: 'POST',
@@ -668,6 +704,183 @@ STEPS:
   }
 }
 
+type YouTubeSignals = {
+  url: string;
+  hasEmailInput: boolean;
+  hasPasswordInput: boolean;
+  hasVerificationChallenge: boolean;
+  hasCreateButton: boolean;
+  hasUploadVideosMenu: boolean;
+  hasVideoFileInput: boolean;
+  hasNextButton: boolean;
+  hasPublicOption: boolean;
+  hasDoneButton: boolean;
+};
+
+async function getYouTubeSignals(sendCmd: SendCmd): Promise<YouTubeSignals> {
+  const signals = await evalJS(sendCmd, `
+    const text = (document.body?.innerText || '').toLowerCase();
+    const hasCreateByText = [...document.querySelectorAll('button, ytcp-button, [role="button"]')]
+      .some((el) => ((el.textContent || '').toLowerCase().includes('create') || (el.getAttribute('aria-label') || '').toLowerCase().includes('create')));
+
+    return {
+      url: window.location.href,
+      hasEmailInput: !!document.querySelector('input[type="email"]'),
+      hasPasswordInput: !!document.querySelector('input[type="password"]'),
+      hasVerificationChallenge: text.includes('2-step verification') || text.includes('verify it\'s you') || text.includes('try another way') || text.includes('check your phone'),
+      hasCreateButton: !!document.querySelector('#create-icon') || hasCreateByText,
+      hasUploadVideosMenu: !!document.querySelector('#text-item-0') || [...document.querySelectorAll('tp-yt-paper-item, [role="menuitem"]')].some((el) => (el.textContent || '').toLowerCase().includes('upload')),
+      hasVideoFileInput: !!document.querySelector('input[type="file"][accept*="video"], input[type="file"]'),
+      hasNextButton: !!document.querySelector('#next-button'),
+      hasPublicOption: !!document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]'),
+      hasDoneButton: !!document.querySelector('#done-button'),
+    };
+  `);
+
+  return {
+    url: signals?.url || '',
+    hasEmailInput: Boolean(signals?.hasEmailInput),
+    hasPasswordInput: Boolean(signals?.hasPasswordInput),
+    hasVerificationChallenge: Boolean(signals?.hasVerificationChallenge),
+    hasCreateButton: Boolean(signals?.hasCreateButton),
+    hasUploadVideosMenu: Boolean(signals?.hasUploadVideosMenu),
+    hasVideoFileInput: Boolean(signals?.hasVideoFileInput),
+    hasNextButton: Boolean(signals?.hasNextButton),
+    hasPublicOption: Boolean(signals?.hasPublicOption),
+    hasDoneButton: Boolean(signals?.hasDoneButton),
+  };
+}
+
+async function getDeterministicYouTubeAction(
+  sendCmd: SendCmd,
+  params: AutomationParams,
+  fileUploaded: boolean,
+): Promise<AgentAction | null> {
+  const s = await getYouTubeSignals(sendCmd);
+
+  if (s.url.includes('accounts.google.com')) {
+    if (s.hasVerificationChallenge) {
+      return {
+        action: 'need_verification',
+        reasoning: 'Google verification challenge detected via deterministic detector.',
+      };
+    }
+
+    if (s.hasEmailInput && params.email) {
+      return {
+        action: 'run_js',
+        reasoning: 'Deterministic: fill Google email and continue.',
+        js: `
+          const input = document.querySelector('input[type="email"]');
+          if (!input) return 'no-email-input';
+          input.focus();
+          input.value = '${escJS(params.email)}';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          const next = document.querySelector('#identifierNext') || [...document.querySelectorAll('button, [role="button"]')].find((b) => (b.textContent || '').toLowerCase().includes('next'));
+          if (next) next.click();
+          return 'email-submitted';
+        `,
+      };
+    }
+
+    if (s.hasPasswordInput && params.password) {
+      return {
+        action: 'run_js',
+        reasoning: 'Deterministic: fill Google password and continue.',
+        js: `
+          const input = document.querySelector('input[type="password"]');
+          if (!input) return 'no-password-input';
+          input.focus();
+          input.value = '${escJS(params.password)}';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          const next = document.querySelector('#passwordNext') || [...document.querySelectorAll('button, [role="button"]')].find((b) => (b.textContent || '').toLowerCase().includes('next'));
+          if (next) next.click();
+          return 'password-submitted';
+        `,
+      };
+    }
+  }
+
+  if (s.url.includes('studio.youtube.com')) {
+    if (!fileUploaded && s.hasVideoFileInput) {
+      return {
+        action: 'upload_file',
+        reasoning: 'Deterministic: file input is visible in YouTube upload dialog.',
+      };
+    }
+
+    if (!fileUploaded && s.hasUploadVideosMenu) {
+      return {
+        action: 'run_js',
+        reasoning: 'Deterministic: click "Upload videos" menu item.',
+        js: `
+          const direct = document.querySelector('#text-item-0');
+          if (direct) { direct.click(); return 'clicked-direct-upload-menu'; }
+          const item = [...document.querySelectorAll('tp-yt-paper-item, [role="menuitem"]')]
+            .find((el) => (el.textContent || '').toLowerCase().includes('upload'));
+          if (item) { item.click(); return 'clicked-upload-menu'; }
+          return 'no-upload-menu';
+        `,
+      };
+    }
+
+    if (!fileUploaded && s.hasCreateButton) {
+      return {
+        action: 'run_js',
+        reasoning: 'Deterministic: click YouTube Create button.',
+        js: `
+          const byId = document.querySelector('#create-icon');
+          if (byId) { byId.click(); return 'clicked-create-id'; }
+          const btn = [...document.querySelectorAll('button, ytcp-button, [role="button"]')]
+            .find((el) => (el.textContent || '').toLowerCase().includes('create') || (el.getAttribute('aria-label') || '').toLowerCase().includes('create'));
+          if (btn) { btn.click(); return 'clicked-create-text'; }
+          return 'no-create-button';
+        `,
+      };
+    }
+
+    if (fileUploaded && s.hasNextButton) {
+      return {
+        action: 'run_js',
+        reasoning: 'Deterministic: advance YouTube wizard by clicking Next.',
+        js: `
+          const next = document.querySelector('#next-button');
+          if (next) { next.click(); return 'clicked-next'; }
+          return 'no-next';
+        `,
+      };
+    }
+
+    if (fileUploaded && s.hasPublicOption) {
+      return {
+        action: 'run_js',
+        reasoning: 'Deterministic: choose Public visibility.',
+        js: `
+          const pub = document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]');
+          if (pub) { pub.click(); return 'clicked-public'; }
+          return 'no-public';
+        `,
+      };
+    }
+
+    if (fileUploaded && s.hasDoneButton) {
+      return {
+        action: 'run_js',
+        reasoning: 'Deterministic: click Done/Publish button.',
+        js: `
+          const done = document.querySelector('#done-button');
+          if (done) { done.click(); return 'clicked-done'; }
+          return 'no-done';
+        `,
+      };
+    }
+  }
+
+  return null;
+}
+
 // ========== Main Agentic Loop ==========
 
 async function agenticUpload(
@@ -723,12 +936,22 @@ async function agenticUpload(
       consecutiveSameAction = 0;
     }
 
-    console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — asking AI...`);
     let action: AgentAction;
+
     try {
-      action = await askAI(params.lovableApiKey, screenshot, pageInfo, taskPrompt, history);
+      const deterministicAction = platform === 'youtube'
+        ? await getDeterministicYouTubeAction(sendCmd, params, fileUploaded)
+        : null;
+
+      if (deterministicAction) {
+        action = deterministicAction;
+        console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — deterministic action selected.`);
+      } else {
+        console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — asking AI...`);
+        action = await askAI(params.lovableApiKey, screenshot, pageInfo, taskPrompt, history);
+      }
     } catch (e) {
-      console.error('[Agent] AI call failed:', e);
+      console.error('[Agent] AI/deterministic planning failed:', e);
       await wait(3000);
       continue;
     }
