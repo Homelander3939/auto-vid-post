@@ -2,7 +2,7 @@
 // When running locally with the Node.js server, the server handles actual uploads.
 // This layer handles all CRUD so the UI works standalone in Lovable preview.
 
-import { v4 as uuidv4 } from 'crypto';
+// No external deps needed — we use a simple ID generator below
 
 export interface AppSettings {
   folderPath: string;
