@@ -177,7 +177,7 @@ function JobCard({ job }: { job: UploadJob }) {
               </Badge>
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              <span className="text-[11px] text-muted-foreground tabular-nums mr-2">
+              <span className="text-[11px] text-muted-foreground tabular-nums mr-2 hidden sm:inline">
                 {new Date(job.created_at).toLocaleString()}
               </span>
               <Button variant="ghost" size="sm" onClick={() => setExpanded(!expanded)}
