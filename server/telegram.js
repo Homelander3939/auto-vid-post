@@ -1,28 +1,100 @@
 const fetch = require('node-fetch');
 
-async function sendTelegram(botToken, chatId, message) {
-  if (!botToken || !chatId) {
-    console.log('[Telegram] Skipped — no token or chat ID configured');
-    return;
-  }
+function normalizeChatId(chatId) {
+  if (chatId === null || chatId === undefined) return null;
+  const raw = String(chatId).trim();
+  if (!raw) return null;
+  const asNum = Number(raw);
+  return Number.isFinite(asNum) ? asNum : raw;
+}
 
+async function sendViaBotToken(botToken, chatId, payload) {
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       chat_id: chatId,
-      text: message,
       parse_mode: 'HTML',
+      ...payload,
     }),
   });
 
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(`Telegram error: ${JSON.stringify(err)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data?.ok === false) {
+    throw new Error(`Telegram error [${res.status}]: ${JSON.stringify(data)}`);
   }
-
-  return res.json();
+  return data;
 }
 
-module.exports = { sendTelegram };
+async function sendViaEdgeFunction(payload, backend) {
+  if (!backend?.supabaseUrl || !backend?.supabaseKey) {
+    throw new Error('Edge function fallback unavailable (missing backend credentials)');
+  }
+
+  const response = await fetch(`${backend.supabaseUrl}/functions/v1/send-telegram`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${backend.supabaseKey}`,
+      apikey: backend.supabaseKey,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.success) {
+    throw new Error(`send-telegram failed [${response.status}]: ${data?.error || JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+async function sendTelegram(botToken, chatId, message, backend) {
+  const normalizedChatId = normalizeChatId(chatId);
+  if (!normalizedChatId) {
+    console.log('[Telegram] Skipped — no chat ID configured');
+    return null;
+  }
+
+  let botTokenError = null;
+  if (botToken) {
+    try {
+      return await sendViaBotToken(botToken, normalizedChatId, { text: message });
+    } catch (e) {
+      botTokenError = e;
+      console.warn('[Telegram] Bot token send failed, trying edge-function fallback...');
+    }
+  }
+
+  if (backend?.supabaseUrl && backend?.supabaseKey) {
+    return sendViaEdgeFunction({
+      chat_id: normalizedChatId,
+      text: message,
+      parse_mode: 'HTML',
+    }, backend);
+  }
+
+  if (botTokenError) throw botTokenError;
+  console.log('[Telegram] Skipped — no bot token and no edge-function fallback configured');
+  return null;
+}
+
+async function sendTelegramPhoto(botToken, chatId, photoBuffer, caption = '', backend) {
+  const normalizedChatId = normalizeChatId(chatId);
+  if (!normalizedChatId || !photoBuffer) return null;
+
+  if (backend?.supabaseUrl && backend?.supabaseKey) {
+    return sendViaEdgeFunction({
+      chat_id: normalizedChatId,
+      text: caption,
+      parse_mode: 'HTML',
+      photo_base64: Buffer.from(photoBuffer).toString('base64'),
+      photo_mime_type: 'image/png',
+    }, backend);
+  }
+
+  // If edge fallback is unavailable, at least send a text notification.
+  return sendTelegram(botToken, normalizedChatId, `${caption}\n\n(Preview image unavailable in current local setup)`, backend);
+}
+
+module.exports = { sendTelegram, sendTelegramPhoto };
