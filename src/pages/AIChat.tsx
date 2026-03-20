@@ -85,8 +85,9 @@ export default function AIChat() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [messages]);
 
