@@ -389,7 +389,14 @@ async function extractMessageContent(
 }
 
 function sanitizeTelegramText(text: string): string {
-  return text.replace(/\u0000/g, '').slice(0, 3900);
+  return text
+    .replace(/\u0000/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, ''))
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .slice(0, 3900);
 }
 
 serve(async (req) => {
