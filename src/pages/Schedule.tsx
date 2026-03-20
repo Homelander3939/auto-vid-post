@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getSchedules, saveSchedule, deleteScheduleConfig, type ScheduleConfig } from '@/lib/storage';
+import { getSchedules, saveSchedule, deleteScheduleConfig, getScheduledUploads, deleteScheduledUpload, type ScheduleConfig, type ScheduledUpload } from '@/lib/storage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
