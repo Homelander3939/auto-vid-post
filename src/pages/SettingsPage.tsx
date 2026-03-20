@@ -15,8 +15,8 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { useState, useEffect } from 'react';
-import { FolderOpen, Eye, EyeOff, FlaskConical, Trash2 } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { FolderOpen, Eye, EyeOff, FlaskConical, Trash2, UploadCloud, FileVideo, FileText } from 'lucide-react';
 
 function PasswordInput({
   value,
@@ -72,6 +72,9 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [demoVideoName, setDemoVideoName] = useState('');
   const [demoTextContent, setDemoTextContent] = useState('');
+  const [demoVideoFile, setDemoVideoFile] = useState<File | null>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const textInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (savedSettings) setSettings(savedSettings);
@@ -111,6 +114,26 @@ export default function SettingsPage() {
     setDemoTextContent(sampleTextContent);
   };
 
+  const handleVideoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setDemoVideoName(file.name);
+    setDemoVideoFile(file);
+    toast({ title: `Video selected: ${file.name}` });
+  };
+
+  const handleTextFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setDemoTextContent(text);
+      toast({ title: `Text file loaded: ${file.name}` });
+    } catch {
+      toast({ title: 'Could not read text file', variant: 'destructive' });
+    }
+  };
+
   const updatePlatform = (
     platform: 'youtube' | 'tiktok' | 'instagram',
     field: string,
@@ -142,7 +165,45 @@ export default function SettingsPage() {
             Simulate video and text files to test the full flow without a local server
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-5">
+          {/* Upload buttons */}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <input
+              ref={videoInputRef}
+              type="file"
+              accept="video/*,.mp4,.mov,.avi,.mkv,.webm"
+              className="hidden"
+              onChange={handleVideoFileSelect}
+            />
+            <button
+              type="button"
+              onClick={() => videoInputRef.current?.click()}
+              className="flex flex-col items-center gap-2 rounded-lg border-2 border-dashed border-border p-6 text-center transition-colors hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98]"
+            >
+              <FileVideo className="w-6 h-6 text-primary" />
+              <span className="text-sm font-medium">Upload Video File</span>
+              <span className="text-xs text-muted-foreground">.mp4, .mov, .avi, .mkv, .webm</span>
+            </button>
+
+            <input
+              ref={textInputRef}
+              type="file"
+              accept=".txt,text/plain"
+              className="hidden"
+              onChange={handleTextFileSelect}
+            />
+            <button
+              type="button"
+              onClick={() => textInputRef.current?.click()}
+              className="flex flex-col items-center gap-2 rounded-lg border-2 border-dashed border-border p-6 text-center transition-colors hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98]"
+            >
+              <FileText className="w-6 h-6 text-primary" />
+              <span className="text-sm font-medium">Upload Text File</span>
+              <span className="text-xs text-muted-foreground">.txt with title, description, tags</span>
+            </button>
+          </div>
+
+          {/* Video filename */}
           <div className="space-y-2">
             <Label>Video Filename</Label>
             <Input
@@ -151,7 +212,14 @@ export default function SettingsPage() {
               placeholder="my_video.mp4"
               className="font-mono"
             />
+            {demoVideoFile && (
+              <p className="text-xs text-muted-foreground">
+                Selected: {demoVideoFile.name} ({(demoVideoFile.size / 1024 / 1024).toFixed(1)} MB)
+              </p>
+            )}
           </div>
+
+          {/* Text content */}
           <div className="space-y-2">
             <Label>Text File Content</Label>
             <Textarea
@@ -161,9 +229,11 @@ export default function SettingsPage() {
               className="font-mono text-sm min-h-[120px]"
             />
           </div>
-          <div className="flex gap-2">
-            <Button onClick={handleSaveDemo} size="sm">
-              Save Demo Files
+
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={handleSaveDemo} size="sm" className="gap-1.5">
+              <UploadCloud className="w-3.5 h-3.5" />
+              Save & Apply
             </Button>
             <Button variant="outline" size="sm" onClick={handleLoadSample}>
               Load Sample
