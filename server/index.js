@@ -93,7 +93,10 @@ async function processJob(jobId) {
     await supabase.from('upload_jobs').update({ platform_results: [...results] }).eq('id', jobId);
 
     try {
-      const result = await uploaders[platform.name](videoPath, metadata, settings[platform.name]);
+      const result = await uploaders[platform.name](videoPath, metadata, {
+        ...settings[platform.name],
+        telegram: settings.telegram,
+      });
       platform.status = 'success';
       platform.url = result.url || '';
 
