@@ -81,6 +81,7 @@ export async function getSettings(): Promise<AppSettings> {
 
   return {
     folderPath: data.folder_path,
+    uploadMode: (data as any).upload_mode || 'local',
     youtube: { email: data.youtube_email, password: data.youtube_password, enabled: data.youtube_enabled },
     tiktok: { email: data.tiktok_email, password: data.tiktok_password, enabled: data.tiktok_enabled },
     instagram: { email: data.instagram_email, password: data.instagram_password, enabled: data.instagram_enabled },
