@@ -7,10 +7,17 @@ import { RefreshCw, ExternalLink, Inbox, Trash2, Video } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const statusColors: Record<string, string> = {
-  pending: 'bg-muted text-muted-foreground',
+  pending: 'bg-amber-100 text-amber-700',
   uploading: 'bg-[hsl(var(--info))]/10 text-[hsl(var(--info))]',
   success: 'bg-[hsl(var(--success))]/10 text-[hsl(var(--success))]',
   error: 'bg-destructive/10 text-destructive',
+};
+
+const statusLabels: Record<string, string> = {
+  pending: 'waiting for local server',
+  uploading: 'uploading…',
+  success: 'success',
+  error: 'error',
 };
 
 export default function UploadQueue() {
