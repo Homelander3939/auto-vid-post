@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Settings, LayoutDashboard, Upload, Clock } from 'lucide-react';
+import { Settings, LayoutDashboard, Upload, Clock, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const navItems = [
@@ -7,6 +7,7 @@ const navItems = [
   { to: '/queue', icon: Upload, label: 'Upload Queue' },
   { to: '/schedule', icon: Clock, label: 'Schedule' },
   { to: '/settings', icon: Settings, label: 'Settings' },
+  { to: '/setup', icon: BookOpen, label: 'Setup Guide' },
 ];
 
 export default function AppLayout() {
@@ -46,7 +47,7 @@ export default function AppLayout() {
 
         <div className="p-4 border-t">
           <p className="text-xs text-muted-foreground">
-            Preview mode — data stored in browser
+            Cloud-connected · Local server for uploads
           </p>
         </div>
       </aside>

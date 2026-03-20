@@ -317,3 +317,16 @@ export async function createScheduledUpload(
 export async function deleteScheduledUpload(id: string): Promise<void> {
   await supabase.from('scheduled_uploads').delete().eq('id', id);
 }
+
+// --- Cloud Telegram notifications ---
+export async function sendTelegramNotification(chatId: string, text: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.functions.invoke('send-telegram', {
+      body: { chat_id: chatId, text },
+    });
+    if (error) throw error;
+    return data?.success || false;
+  } catch {
+    return false;
+  }
+}
