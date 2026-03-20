@@ -1,0 +1,1 @@
+ALTER TABLE public.upload_jobs ADD COLUMN IF NOT EXISTS browserbase_session_id text;
