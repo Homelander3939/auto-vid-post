@@ -195,6 +195,7 @@ export type Database = {
       }
       upload_jobs: {
         Row: {
+          browserbase_session_id: string | null
           completed_at: string | null
           created_at: string
           description: string
@@ -208,6 +209,7 @@ export type Database = {
           video_storage_path: string | null
         }
         Insert: {
+          browserbase_session_id?: string | null
           completed_at?: string | null
           created_at?: string
           description?: string
@@ -221,6 +223,7 @@ export type Database = {
           video_storage_path?: string | null
         }
         Update: {
+          browserbase_session_id?: string | null
           completed_at?: string | null
           created_at?: string
           description?: string

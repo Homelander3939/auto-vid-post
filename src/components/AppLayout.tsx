@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Settings, LayoutDashboard, Upload, Clock, BookOpen, MessageSquare, Wifi, WifiOff, Cloud, Monitor } from 'lucide-react';
+import { Settings, LayoutDashboard, Upload, Clock, BookOpen, MessageSquare, Wifi, WifiOff, Cloud, Monitor, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -11,6 +11,7 @@ const navItems = [
   { to: '/queue', icon: Upload, label: 'Upload Queue' },
   { to: '/schedule', icon: Clock, label: 'Schedule' },
   { to: '/chat', icon: MessageSquare, label: 'AI Chat' },
+  { to: '/browser', icon: Globe, label: 'Browser' },
   { to: '/settings', icon: Settings, label: 'Settings' },
   { to: '/setup', icon: BookOpen, label: 'Setup Guide' },
 ];
