@@ -152,10 +152,11 @@ async function extractMessageContent(
   message: any,
   lovableKey: string,
   telegramKey: string,
-): Promise<{ text: string; images: TelegramMediaRef[]; files: TelegramMediaRef[]; hasMedia: boolean }> {
+): Promise<{ text: string; images: TelegramMediaRef[]; files: TelegramMediaRef[]; audioDataUrl: string | null; hasMedia: boolean }> {
   const text = message.text || message.caption || '';
   const images: TelegramMediaRef[] = [];
   const files: TelegramMediaRef[] = [];
+  let audioDataUrl: string | null = null;
 
   if (message.photo?.length) {
     const largest = message.photo[message.photo.length - 1];
@@ -188,18 +189,38 @@ async function extractMessageContent(
     }
   }
 
-  const voiceLike = message.voice || message.audio || message.video || null;
+  const voiceLike = message.voice || message.audio || null;
   if (voiceLike?.file_id) {
     const download = await fetchTelegramFileBytes(voiceLike.file_id, lovableKey, telegramKey);
     if (download) {
-      const guessedType = message.voice
-        ? 'audio/ogg'
-        : message.audio?.mime_type || message.video?.mime_type || download.mimeType;
+      const guessedType = message.voice ? 'audio/ogg' : message.audio?.mime_type || download.mimeType;
+
+      // Keep base64 for AI transcription
+      let binary = '';
+      for (let i = 0; i < download.bytes.length; i++) {
+        binary += String.fromCharCode(download.bytes[i]);
+      }
+      audioDataUrl = `data:${guessedType};base64,${btoa(binary)}`;
+
       const media = await uploadTelegramMediaToStorage(
         supabase,
         download.bytes,
         guessedType,
-        message.audio?.file_name || `telegram-${message.voice ? 'voice' : message.video ? 'video' : 'audio'}-${Date.now()}.${extFromMime(guessedType)}`,
+        message.audio?.file_name || `telegram-${message.voice ? 'voice' : 'audio'}-${Date.now()}.${extFromMime(guessedType)}`,
+      );
+      if (media) files.push(media);
+    }
+  }
+
+  const videoMsg = message.video || message.video_note || null;
+  if (videoMsg?.file_id) {
+    const download = await fetchTelegramFileBytes(videoMsg.file_id, lovableKey, telegramKey);
+    if (download) {
+      const media = await uploadTelegramMediaToStorage(
+        supabase,
+        download.bytes,
+        message.video?.mime_type || download.mimeType,
+        `telegram-video-${Date.now()}.mp4`,
       );
       if (media) files.push(media);
     }
@@ -209,6 +230,7 @@ async function extractMessageContent(
     text,
     images,
     files,
+    audioDataUrl,
     hasMedia: images.length > 0 || files.length > 0,
   };
 }
