@@ -90,6 +90,13 @@ export default function Dashboard() {
       const storagePath = await uploadVideoFile(videoFile);
       await createUploadJob(videoFile.name, storagePath, metadata, selectedPlatforms);
 
+      // Auto-trigger processing
+      try {
+        await supabase.functions.invoke('process-uploads', { body: {} });
+      } catch (e) {
+        console.log('Auto-trigger process-uploads:', e);
+      }
+
       toast({
         title: 'Job queued!',
         description: 'Video stored. Upload will begin automatically.',
