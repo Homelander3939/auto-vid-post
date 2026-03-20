@@ -310,7 +310,7 @@ export default function SettingsPage() {
                 try {
                   const { data, error } = await supabase.functions.invoke('send-telegram', {
                     body: {
-                      chat_id: settings.telegram.chatId,
+                      chat_id: Number(settings.telegram.chatId),
                       text: '✅ <b>Video Uploader</b> — Telegram notifications are working!',
                     },
                   });
