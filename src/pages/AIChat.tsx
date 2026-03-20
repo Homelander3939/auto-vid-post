@@ -426,12 +426,12 @@ export default function AIChat() {
 
   /* ── Render ────────────────────────── */
   return (
-    <div className="space-y-3 h-[calc(100vh-8rem)] flex flex-col">
+    <div className="space-y-3 h-[calc(100dvh-8rem)] md:h-[calc(100dvh-8rem)] flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">AI Assistant</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">AI Assistant</h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
             Chat here or via Telegram — synced in real-time
           </p>
         </div>
@@ -440,7 +440,7 @@ export default function AIChat() {
 
       {/* Chat area */}
       <Card className="flex-1 flex flex-col overflow-hidden border shadow-sm">
-        <div className="flex-1 overflow-y-auto p-5" ref={scrollRef}>
+        <div className="flex-1 overflow-y-auto p-3 sm:p-5" ref={scrollRef}>
           <div className="space-y-5 max-w-3xl mx-auto">
             {messages.length === 0 && (
               <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -471,7 +471,7 @@ export default function AIChat() {
                     <Bot className="w-4 h-4 text-primary" />
                   </div>
                 )}
-                <div className={`flex flex-col max-w-[78%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                <div className={`flex flex-col max-w-[85%] sm:max-w-[78%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                   {/* Source label */}
                   {msg.source === 'telegram' && (
                     <div className="flex items-center gap-1 mb-1">
@@ -597,15 +597,15 @@ export default function AIChat() {
         )}
 
         {/* Input area */}
-        <div className="border-t p-3 flex items-end gap-2">
-          <input ref={fileInputRef} type="file" accept="image/*,.txt,.md,.csv,.json,.pdf,.doc,.docx" multiple className="hidden" onChange={handleFileSelect} />
-          <Button variant="ghost" size="icon" className="shrink-0 h-10 w-10 text-muted-foreground hover:text-foreground"
+        <div className="border-t p-2 sm:p-3 flex items-end gap-1.5 sm:gap-2">
+          <input ref={fileInputRef} type="file" accept="image/*,video/*,.txt,.md,.csv,.json,.pdf,.doc,.docx" multiple className="hidden" onChange={handleFileSelect} />
+          <Button variant="ghost" size="icon" className="shrink-0 h-9 w-9 sm:h-10 sm:w-10 text-muted-foreground hover:text-foreground"
             onClick={() => fileInputRef.current?.click()} disabled={isLoading}>
-            <Paperclip className="w-5 h-5" />
+            <Paperclip className="w-4 h-4 sm:w-5 sm:h-5" />
           </Button>
 
-          <Button variant={voice.recording ? 'destructive' : 'ghost'} size="icon"
-            className={`shrink-0 h-10 w-10 ${!voice.recording ? 'text-muted-foreground hover:text-foreground' : ''}`}
+          <Button variant={voice.recording ? 'destructive' : 'ghost'} size="icon" 
+            className={`shrink-0 h-9 w-9 sm:h-10 sm:w-10 hidden sm:flex ${!voice.recording ? 'text-muted-foreground hover:text-foreground' : ''}`}
             onClick={handleVoiceToggle} disabled={isLoading}>
             {voice.recording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
           </Button>
@@ -617,13 +617,13 @@ export default function AIChat() {
             </div>
           )}
 
-          <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
+          <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} 
             placeholder={voice.recording ? 'Recording… click mic to stop' : 'Type a message…'}
-            className="flex-1 min-h-[42px] max-h-32 resize-none rounded-xl border bg-background px-4 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+            className="flex-1 min-h-[40px] max-h-32 resize-none rounded-xl border bg-background px-3 sm:px-4 py-2 sm:py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
             rows={1} disabled={voice.recording} />
 
           <Button onClick={send} disabled={(!input.trim() && pendingFiles.length === 0) || isLoading || voice.recording}
-            size="icon" className="shrink-0 h-10 w-10 rounded-xl">
+            size="icon" className="shrink-0 h-9 w-9 sm:h-10 sm:w-10 rounded-xl">
             <Send className="w-4 h-4" />
           </Button>
         </div>

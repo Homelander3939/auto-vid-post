@@ -102,9 +102,9 @@ export default function BrowserSessions() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Browser Sessions</h1>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Browser Sessions</h1>
           <p className="text-muted-foreground mt-1">Monitor live cloud browser automation</p>
         </div>
         <Button
@@ -161,7 +161,7 @@ export default function BrowserSessions() {
                           src={liveUrl}
                           title={`Live session ${session.id}`}
                           className="w-full"
-                          style={{ height: 620 }}
+                          style={{ height: 'min(620px, 60vh)' }}
                           allow="autoplay; clipboard-write"
                           sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
                         />

@@ -112,7 +112,7 @@ export default function Dashboard() {
         </TabsList>
 
         <TabsContent value="single" className="space-y-6 mt-6">
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2">
             <input
               ref={videoInputRef}
               type="file"
@@ -123,7 +123,7 @@ export default function Dashboard() {
             <button
               type="button"
               onClick={() => videoInputRef.current?.click()}
-              className={`flex flex-col items-center gap-3 rounded-xl border-2 border-dashed p-8 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
+              className={`flex flex-col items-center gap-2 sm:gap-3 rounded-xl border-2 border-dashed p-5 sm:p-8 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
                 videoFile ? 'border-primary/50 bg-primary/5' : 'border-border'
               }`}
             >
@@ -154,7 +154,7 @@ export default function Dashboard() {
             <button
               type="button"
               onClick={() => textInputRef.current?.click()}
-              className={`flex flex-col items-center gap-3 rounded-xl border-2 border-dashed p-8 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
+              className={`flex flex-col items-center gap-2 sm:gap-3 rounded-xl border-2 border-dashed p-5 sm:p-8 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
                 textContent ? 'border-primary/50 bg-primary/5' : 'border-border'
               }`}
             >
