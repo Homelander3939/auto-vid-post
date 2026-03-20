@@ -416,6 +416,7 @@ export default function UploadQueue() {
 
   const isCloud = settings?.uploadMode === 'cloud';
   const upcomingUploads = scheduledUploads.filter(s => s.status === 'scheduled');
+  const activeRecurring = recurringSchedules.filter(s => s.enabled);
 
   const handleClear = async () => {
     for (const job of jobs) {
