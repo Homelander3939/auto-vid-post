@@ -10,7 +10,8 @@ import { Calendar } from '@/components/ui/calendar';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { useState, useEffect, useMemo } from 'react';
-import { Clock, CalendarDays, Repeat, Save, FolderOpen, Timer, Plus, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Clock, CalendarDays, Repeat, Save, FolderOpen, Timer, Plus, Trash2, ChevronDown, ChevronUp, CalendarClock } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import CampaignScheduler from '@/components/CampaignScheduler';
 
 type FrequencyMode = 'hourly' | 'daily' | 'weekly';
