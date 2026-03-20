@@ -3,8 +3,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 const AI_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
-const MAX_RUNTIME_MS = 55_000;
-const MIN_REMAINING_MS = 5_000;
+const MAX_RUNTIME_MS = 20_000;
+const MIN_REMAINING_MS = 3_000;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -90,8 +90,9 @@ serve(async (req) => {
     const remainingMs = MAX_RUNTIME_MS - elapsed;
     if (remainingMs < MIN_REMAINING_MS) break;
 
-    const timeout = Math.min(50, Math.floor(remainingMs / 1000) - 5);
+    const timeout = Math.min(5, Math.floor(remainingMs / 1000) - 3);
     if (timeout < 1) break;
+    console.log(`Polling with offset=${currentOffset}, timeout=${timeout}s, remaining=${Math.round(remainingMs/1000)}s`);
 
     const response = await fetch(`${TELEGRAM_GATEWAY}/getUpdates`, {
       method: 'POST',
