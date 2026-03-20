@@ -45,7 +45,37 @@ serve(async (req) => {
     const { data: appSettings } = await supabase
       .from('app_settings')
       .select('telegram_enabled, telegram_chat_id')
-      .eq('id', 1).single();
+      .eq('id', 1)
+      .single();
+
+    async function resolveTelegramChatId(): Promise<number | null> {
+      const configured = String(appSettings?.telegram_chat_id || '').trim();
+      if (configured && Number.isFinite(Number(configured))) {
+        return Number(configured);
+      }
+
+      const { data: latestMessage } = await supabase
+        .from('telegram_messages')
+        .select('chat_id')
+        .eq('is_bot', false)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      const fallbackId = latestMessage?.[0]?.chat_id;
+      if (!fallbackId || !Number.isFinite(Number(fallbackId))) {
+        return null;
+      }
+
+      const numericFallbackId = Number(fallbackId);
+      await supabase
+        .from('app_settings')
+        .update({ telegram_chat_id: String(numericFallbackId) })
+        .eq('id', 1);
+
+      return numericFallbackId;
+    }
+
+    const resolvedTelegramChatId = await resolveTelegramChatId();
 
     if (jobErr || !job) {
       return new Response(JSON.stringify({ success: false, error: 'Job not found' }), {
@@ -98,8 +128,8 @@ serve(async (req) => {
       supabase,
       lovableApiKey: LOVABLE_API_KEY,
       telegram: {
-        enabled: Boolean(appSettings?.telegram_enabled && appSettings?.telegram_chat_id && TELEGRAM_API_KEY),
-        chatId: appSettings?.telegram_chat_id || null,
+        enabled: Boolean(appSettings?.telegram_enabled && resolvedTelegramChatId && TELEGRAM_API_KEY),
+        chatId: resolvedTelegramChatId,
         lovableApiKey: LOVABLE_API_KEY,
         telegramApiKey: TELEGRAM_API_KEY || undefined,
       },
