@@ -203,10 +203,48 @@ function JobCard({ job }: { job: UploadJob }) {
                   <RefreshCw className="w-3 h-3" />
                 </Button>
               )}
-              <Button variant="ghost" size="sm" onClick={handleDelete}
-                className="h-7 px-1.5 text-muted-foreground hover:text-destructive">
-                <Trash2 className="w-3 h-3" />
-              </Button>
+              {isActive && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="ghost" size="sm"
+                      className="h-7 px-1.5 text-muted-foreground hover:text-amber-600">
+                      <StopCircle className="w-3 h-3" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Stop this upload?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will cancel the upload and terminate the browser session. Credits for the session will stop being used.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep Running</AlertDialogCancel>
+                      <AlertDialogAction onClick={handleStop} className="bg-amber-600 hover:bg-amber-700">Stop Upload</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="ghost" size="sm"
+                    className="h-7 px-1.5 text-muted-foreground hover:text-destructive">
+                    <Trash2 className="w-3 h-3" />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete this job?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This action cannot be undone. {isActive && 'The active browser session will also be terminated.'}
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleDelete} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Delete</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </div>
         </CardHeader>
