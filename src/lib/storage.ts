@@ -41,6 +41,8 @@ export interface UploadJob {
 }
 
 export interface ScheduleConfig {
+  id?: number;
+  name: string;
   enabled: boolean;
   cronExpression: string;
   platforms: string[];
