@@ -93,7 +93,7 @@ async function fetchApprovalFromBackendMessages({ telegram, backend, sinceIso })
   return null;
 }
 
-async function requestTelegramApproval({ telegram, platform, customMessage, timeoutMs = 240000, screenshotBuffer, backend }) {
+async function requestTelegramApproval({ telegram, platform, customMessage, timeoutMs = 240000, screenshotBuffer, screenshotCaption, backend }) {
   if (!telegram?.enabled || !telegram?.chatId) return null;
 
   const startedAt = Date.now();
@@ -114,11 +114,12 @@ async function requestTelegramApproval({ telegram, platform, customMessage, time
     .catch((e) => console.error('[Approval] Telegram notify failed:', e?.message || e));
 
   if (screenshotBuffer) {
+    const caption = screenshotCaption || `📸 <b>${platform}</b> screen captured — review and reply in Telegram to continue`;
     await sendTelegramPhoto(
       telegram.botToken,
       telegram.chatId,
       screenshotBuffer,
-      `📸 <b>${platform}</b> verification screen`,
+      caption,
       backend,
     ).catch((e) => console.error('[Approval] Telegram screenshot failed:', e?.message || e));
   }
