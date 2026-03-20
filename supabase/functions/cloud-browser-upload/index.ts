@@ -326,7 +326,7 @@ async function uploadVideoFile(sendCmd: SendCmd, wait: Wait, videoUrl: string): 
 
 // ========== AI Agent Core ==========
 
-const SYSTEM_PROMPT = `You are a fast, precise browser automation agent. You analyze screenshots AND DOM info to decide the single best next action.
+const SYSTEM_PROMPT = `You are an expert browser automation agent that uploads videos to social media platforms. You are fast, decisive, and precise. You analyze screenshots AND DOM info to decide the single best next action.
 
 RESPOND ONLY with a JSON object via the browser_action tool call. No markdown, no extra text.
 
@@ -338,20 +338,40 @@ RESPOND ONLY with a JSON object via the browser_action tool call. No markdown, n
 - **navigate**: Go to a URL.
 - **wait**: Wait N milliseconds (max 10000).
 - **scroll**: Scroll by pixels (positive=down, negative=up).
-- **run_js**: Execute JavaScript in the page. Use for complex DOM manipulations.
+- **run_js**: Execute JavaScript in the page. Use for complex DOM manipulations or to find/click elements that are hard to target with CSS selectors.
 - **upload_file**: Signal that a file input is ready for video upload (we handle it programmatically).
-- **need_verification**: Platform is asking for 2FA/security verification — triggers Telegram notification.
+- **need_verification**: Platform is asking for 2FA/security verification — triggers Telegram notification to user.
 - **done**: Task is complete. Include result with any URLs.
 
 ## CRITICAL RULES:
-1. USE CSS SELECTORS (click_element, focus_and_type) whenever possible. They are 10x more reliable than click_xy coordinates.
-2. On Google Sign-In: The email field selector is 'input[type="email"]'. After typing email, press Enter or click_element on '#identifierNext'.
-3. On Google Password: The password field selector is 'input[type="password"]'. After typing password, press Enter or click_element on '#passwordNext'.
-4. NEVER type credentials using click_xy. ALWAYS use focus_and_type with the correct selector.
-5. After typing in a form field, you usually need to press Enter or click a Next/Submit button.
-6. If a page hasn't fully loaded (blank/white), use "wait" with 3000ms.
-7. If stuck (same screenshot 3+ times), try a completely different approach.
-8. Maximum 50 actions before you MUST return "done".`;
+1. USE CSS SELECTORS (click_element, focus_and_type) whenever possible — 10x more reliable than click_xy coordinates.
+2. If a CSS selector fails, use run_js to find and click elements by text content or aria-label.
+3. NEVER hesitate. If you see the page loaded, ACT IMMEDIATELY. Don't wait unnecessarily.
+4. After typing in a form field, you usually need to press Enter or click a Next/Submit button.
+5. If a page hasn't fully loaded (blank/white), use "wait" with 2000-3000ms.
+6. If stuck (same screenshot 3+ times), try run_js to inspect the DOM and find clickable elements.
+7. Maximum 50 actions before you MUST return "done".
+8. ALWAYS prefer run_js to find and click elements when click_element fails. Example: run_js with document.querySelector('[aria-label="Upload"]')?.click()
+
+## GOOGLE LOGIN (CRITICAL — follow exactly):
+1. Email page: focus_and_type selector='input[type="email"]' → then click_element '#identifierNext' or press_key 'Enter'
+2. Wait 3 seconds for password page to load
+3. Password page: focus_and_type selector='input[type="password"]' → then click_element '#passwordNext' or press_key 'Enter'
+4. If you see a number to tap on phone, "Try another way", captcha, or any verification challenge → return need_verification
+5. NEVER use click_xy for credential entry.
+
+## YOUTUBE STUDIO (CRITICAL — follow exactly):
+- The Create/Upload button: use run_js: document.querySelector('#create-icon')?.click() — if that fails: [...document.querySelectorAll('button, ytcp-button')].find(b => b.textContent?.includes('Create'))?.click()
+- "Upload videos" menu: run_js: document.querySelector('#text-item-0')?.click() — if that fails: [...document.querySelectorAll('tp-yt-paper-item')].find(i => i.textContent?.includes('Upload'))?.click()
+- File input: return upload_file
+- Title: run_js targeting #textbox in #title-textarea
+- Description: second #textbox element
+- Next button: '#next-button'
+- Public radio: tp-yt-paper-radio-button[name="PUBLIC"]
+- Done button: '#done-button'
+
+## TIKTOK: Navigate to tiktok.com/creator#/upload, login if needed, upload file, fill caption, click Post.
+## INSTAGRAM: Login via input[name="username"]/input[name="password"], dismiss popups, click New post icon, upload, caption, Share.`;
 
 async function askAI(
   lovableApiKey: string,
@@ -454,21 +474,33 @@ async function askAI(
 async function sendTelegramMessage(
   telegram: AutomationParams['telegram'], text: string,
 ): Promise<boolean> {
-  if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) return false;
-  const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${telegram.lovableApiKey}`,
-      'X-Connection-Api-Key': telegram.telegramApiKey!,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      chat_id: telegram.chatId,
-      text,
-      parse_mode: 'HTML',
-    }),
-  });
-  return response.ok;
+  if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) {
+    console.log('[Telegram] Message skipped — not configured. enabled:', telegram.enabled, 'chatId:', telegram.chatId);
+    return false;
+  }
+  try {
+    const numericChatId = Number(telegram.chatId);
+    console.log('[Telegram] Sending message to chat:', numericChatId, 'text:', text.substring(0, 80));
+    const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${telegram.lovableApiKey}`,
+        'X-Connection-Api-Key': telegram.telegramApiKey!,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: numericChatId,
+        text,
+        parse_mode: 'HTML',
+      }),
+    });
+    const data = await response.json();
+    console.log('[Telegram] Response:', response.status, JSON.stringify(data).substring(0, 200));
+    return response.ok;
+  } catch (e) {
+    console.error('[Telegram] Failed to send message:', e);
+    return false;
+  }
 }
 
 async function sendTelegramPhoto(
@@ -583,55 +615,53 @@ async function logStep(supabase: any, jobId: string, step: number, action: Agent
 
 function buildTaskPrompt(platform: string, params: AutomationParams): string {
   const cred = params.email && params.password
-    ? `\n\nCredentials:\n- Email: ${params.email}\n- Password: ${params.password}\n\nIMPORTANT: Use focus_and_type with CSS selector to enter credentials. For Google login:\n1. focus_and_type selector='input[type="email"]' text='${params.email}'\n2. click_element selector='#identifierNext' OR press_key 'Enter'\n3. Wait 3s for password page\n4. focus_and_type selector='input[type="password"]' text='${params.password}'\n5. click_element selector='#passwordNext' OR press_key 'Enter'`
+    ? `\n\nCredentials:\n- Email: ${params.email}\n- Password: ${params.password}\n\nFor Google login: focus_and_type on input[type="email"], then click #identifierNext. Wait for password page. focus_and_type on input[type="password"], then click #passwordNext. If any verification challenge appears, return need_verification immediately.`
     : '\n\nNo credentials provided. If login required, return need_verification.';
 
   const meta = `\n\nVideo metadata:\n- Title: ${params.title}\n- Description: ${params.description}\n- Tags: ${params.tags.join(', ')}`;
 
   switch (platform) {
     case 'youtube':
-      return `Upload a video to YouTube Studio (studio.youtube.com).
+      return `Upload a video to YouTube Studio. You MUST complete ALL steps — do NOT stop or wait after reaching the dashboard.
 
-STEP-BY-STEP PLAN:
-1. If on Google login page → enter email via focus_and_type on input[type="email"], then click #identifierNext
-2. Wait for password page → enter password via focus_and_type on input[type="password"], then click #passwordNext  
-3. If 2FA/verification appears → return need_verification
-4. Once on YouTube Studio → click the Create button (look for button with "Upload" or camera+ icon, usually top-right)
-5. Click "Upload videos" from dropdown
-6. When file input appears → return upload_file
-7. After file loads → fill title (clear existing text first, use the textbox element)
-8. Fill description
-9. Click Next 3 times to go through wizard
-10. Select "Public" visibility
-11. Click "Publish" / "Save" / "Done"
-12. Extract the video URL and return done${cred}${meta}`;
+STEP-BY-STEP PLAN (follow precisely, DO NOT SKIP ANY STEP):
+1. If on Google login → enter email, click Next, wait 3s, enter password, click Next
+2. If any verification/2FA → return need_verification
+3. Once on YouTube Studio dashboard → IMMEDIATELY click Create button. Use run_js: document.querySelector('#create-icon')?.click() — if that returns null try: var btns = [...document.querySelectorAll('button, ytcp-button, [role="button"]')]; var cb = btns.find(b => (b.textContent||'').includes('Create') || (b.getAttribute('aria-label')||'').includes('Create') || (b.id||'').includes('create')); if(cb) cb.click();
+4. From dropdown → click "Upload videos". Use run_js: setTimeout(()=>{ var items = [...document.querySelectorAll('tp-yt-paper-item, [role="menuitem"], #text-item-0')]; var ui = items.find(i => (i.textContent||'').includes('Upload')); if(ui) ui.click(); }, 500);
+5. When upload dialog appears with file input → return upload_file
+6. Wait 8s for file processing, then fill title using run_js: var tb = document.querySelector('#title-textarea #textbox') || document.querySelectorAll('#textbox')[0]; if(tb){tb.focus();tb.click();document.execCommand('selectAll');document.execCommand('insertText',false,'${params.title}');}
+7. Fill description similarly using the second #textbox
+8. Click Next button 3 times: run_js: document.querySelector('#next-button')?.click() — with 2s waits between
+9. Select Public visibility: run_js: document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]')?.click()
+10. Click Done/Publish: run_js: document.querySelector('#done-button')?.click()
+11. Wait 5s, extract video URL, return done
+
+CRITICAL: When you see YouTube Studio dashboard with the channel info, the VERY NEXT action must be clicking the Create button. Do NOT return wait or observe — ACT.${cred}${meta}`;
 
     case 'tiktok':
-      return `Upload a video to TikTok.
+      return `Upload a video to TikTok. Complete ALL steps without stopping.
 
-STEP-BY-STEP PLAN:
-1. Navigate to tiktok.com/creator#/upload
-2. If login needed → enter credentials
-3. If verification → return need_verification
-4. When file upload area visible → return upload_file
-5. Fill caption with title + hashtags from tags
-6. Click Post
-7. Return done with URL${cred}${meta}`;
+STEPS:
+1. If login needed → enter credentials
+2. If verification → return need_verification
+3. When upload area visible → return upload_file
+4. Fill caption with title + hashtags
+5. Click Post
+6. Return done with URL${cred}${meta}`;
 
     case 'instagram':
-      return `Upload a video as a Reel on Instagram.
+      return `Upload a Reel on Instagram. Complete ALL steps without stopping.
 
-STEP-BY-STEP PLAN:
-1. Navigate to instagram.com
-2. If login needed → focus_and_type on input[name="username"] and input[name="password"]
-3. If verification → return need_verification
-4. Dismiss any popups (Not Now buttons)
-5. Click Create/New post (+ icon)
-6. When file input visible → return upload_file
-7. Navigate through crop/filter → click Next
-8. Fill caption
-9. Click Share
-10. Return done${cred}${meta}`;
+STEPS:
+1. If login needed → fill username/password, click Log In
+2. If verification → return need_verification
+3. Dismiss popups ("Not Now")
+4. Click New post (+) icon
+5. When file input visible → return upload_file
+6. Navigate through crop/filter → Next
+7. Fill caption
+8. Click Share → return done${cred}${meta}`;
 
     default:
       return `Upload a video to ${platform}.${cred}${meta}`;
