@@ -352,9 +352,13 @@ export default function AIChat() {
     setPendingFiles([]);
     setIsLoading(true);
 
-    // Mirror user message to Telegram
-    if (telegramEnabled && resolvedChatId && text) {
-      void mirrorToTelegram(`💬 ${text}`);
+    // Mirror user message to Telegram + send typing indicator
+    if (telegramEnabled && resolvedChatId) {
+      if (text) void mirrorToTelegram(`💬 ${text}`);
+      // Show "typing..." in Telegram while AI thinks
+      void supabase.functions.invoke('send-telegram', {
+        body: { chat_id: resolvedChatId, action: 'typing' },
+      });
     }
 
     let assistantSoFar = '';
