@@ -3,7 +3,7 @@ import { getQueue, retryJob, deleteJob, clearQueue, type UploadJob, type Platfor
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { RefreshCw, ExternalLink, Inbox, Trash2, Video } from 'lucide-react';
+import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Info } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const statusColors: Record<string, string> = {
