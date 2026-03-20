@@ -30,19 +30,37 @@ const processingJobs = new Set();
 async function getSettings() {
   const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   if (!data) throw new Error('No settings found. Configure settings in the web UI first.');
+
+  let resolvedChatId = data.telegram_chat_id ? String(data.telegram_chat_id).trim() : '';
+  if (data.telegram_enabled && !resolvedChatId) {
+    const { data: latestMessage } = await supabase
+      .from('telegram_messages')
+      .select('chat_id')
+      .eq('is_bot', false)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    const fallbackChatId = latestMessage?.[0]?.chat_id;
+    if (fallbackChatId !== null && fallbackChatId !== undefined && String(fallbackChatId).trim()) {
+      resolvedChatId = String(fallbackChatId).trim();
+      await supabase.from('app_settings').update({ telegram_chat_id: resolvedChatId }).eq('id', 1);
+    }
+  }
+
   return {
     folderPath: data.folder_path,
     youtube: { email: data.youtube_email, password: data.youtube_password, enabled: data.youtube_enabled },
     tiktok: { email: data.tiktok_email, password: data.tiktok_password, enabled: data.tiktok_enabled },
     instagram: { email: data.instagram_email, password: data.instagram_password, enabled: data.instagram_enabled },
-    telegram: { botToken: data.telegram_bot_token, chatId: data.telegram_chat_id, enabled: data.telegram_enabled },
+    telegram: { botToken: data.telegram_bot_token, chatId: resolvedChatId, enabled: data.telegram_enabled },
+    backend: { supabaseUrl: SUPABASE_URL, supabaseKey: SUPABASE_KEY },
   };
 }
 
 async function notifyTelegram(settings, message) {
-  if (!settings.telegram?.enabled || !settings.telegram?.botToken || !settings.telegram?.chatId) return;
+  if (!settings.telegram?.enabled || !settings.telegram?.chatId) return;
   try {
-    await sendTelegram(settings.telegram.botToken, settings.telegram.chatId, message);
+    await sendTelegram(settings.telegram.botToken, settings.telegram.chatId, message, settings.backend);
   } catch (e) {
     console.error('[Telegram] Notification failed:', e.message);
   }
@@ -135,6 +153,7 @@ async function processJob(jobId) {
         const result = await uploaders[platform.name](videoPath, metadata, {
           ...settings[platform.name],
           telegram: settings.telegram,
+          backend: settings.backend,
         });
         platform.status = 'success';
         platform.url = result.url || '';
