@@ -44,6 +44,8 @@ export interface ScheduleConfig {
   enabled: boolean;
   cronExpression: string;
   platforms: string[];
+  folderPath: string;
+  endAt: string | null;
 }
 
 export interface ScheduledUpload {
@@ -297,12 +299,14 @@ export async function getSchedule(): Promise<ScheduleConfig> {
     .eq('id', 1)
     .single();
 
-  if (error || !data) return { enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'] };
+  if (error || !data) return { enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'], folderPath: '', endAt: null };
 
   return {
     enabled: data.enabled,
     cronExpression: data.cron_expression,
     platforms: data.platforms,
+    folderPath: (data as any).folder_path || '',
+    endAt: (data as any).end_at || null,
   };
 }
 
@@ -313,7 +317,9 @@ export async function saveSchedule(config: ScheduleConfig): Promise<void> {
       enabled: config.enabled,
       cron_expression: config.cronExpression,
       platforms: config.platforms,
-    })
+      folder_path: config.folderPath,
+      end_at: config.endAt,
+    } as any)
     .eq('id', 1);
 }
 

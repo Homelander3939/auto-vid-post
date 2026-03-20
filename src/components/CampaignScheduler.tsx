@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createScheduledUpload,
+  createUploadJob,
   getScheduledUploads,
   deleteScheduledUpload,
   parseTextContent,
@@ -51,6 +52,7 @@ export default function CampaignScheduler() {
 
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
   const [saving, setSaving] = useState(false);
+  const [saveProgress, setSaveProgress] = useState('');
   const videoInputRef = useRef<HTMLInputElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
 
@@ -163,16 +165,20 @@ export default function CampaignScheduler() {
       return;
     }
     setSaving(true);
+    let immediateJobIds: string[] = [];
     try {
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        setSaveProgress(`Processing ${i + 1}/${entries.length}...`);
+
         let storagePath: string | null = null;
         let fileName = '';
 
         if (entry.videoFile) {
+          setSaveProgress(`Uploading video ${i + 1}/${entries.length}...`);
           storagePath = await uploadVideoFile(entry.videoFile);
           fileName = entry.videoFile.name;
         } else if (entry.folderPath) {
-          // Folder-based: no file upload now, local server will pick from folder
           fileName = `[folder] ${entry.folderPath}`;
         }
 
@@ -183,24 +189,45 @@ export default function CampaignScheduler() {
           platforms: entry.platforms,
         };
 
-        await createScheduledUpload(
-          fileName,
-          storagePath,
-          metadata,
-          entry.platforms,
-          entry.scheduledAt
-        );
+        // If scheduled time is in the past or within 1 minute, create an upload_job immediately
+        const scheduledTime = new Date(entry.scheduledAt).getTime();
+        const isImmediate = scheduledTime <= Date.now() + 60_000;
+
+        if (isImmediate) {
+          setSaveProgress(`Creating job ${i + 1}/${entries.length}...`);
+          const job = await createUploadJob(fileName, storagePath, metadata, entry.platforms);
+          immediateJobIds.push(job.id);
+        } else {
+          setSaveProgress(`Scheduling ${i + 1}/${entries.length}...`);
+          await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, entry.scheduledAt);
+        }
       }
+
+      // Trigger local server for immediate jobs
+      if (immediateJobIds.length > 0) {
+        try {
+          await fetch('http://localhost:3001/api/process-pending', { method: 'POST' });
+        } catch { /* local server might not be running */ }
+      }
+
+      const immCount = immediateJobIds.length;
+      const schedCount = entries.length - immCount;
+      const parts = [];
+      if (immCount) parts.push(`${immCount} queued now`);
+      if (schedCount) parts.push(`${schedCount} scheduled`);
+
       toast({
-        title: `${entries.length} upload(s) scheduled!`,
-        description: 'They will be processed at their scheduled times.',
+        title: `${entries.length} upload(s) saved!`,
+        description: parts.join(', '),
       });
       setEntries([]);
       queryClient.invalidateQueries({ queryKey: ['scheduled_uploads'] });
+      queryClient.invalidateQueries({ queryKey: ['queue'] });
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     } finally {
       setSaving(false);
+      setSaveProgress('');
     }
   };
 
@@ -454,7 +481,7 @@ export default function CampaignScheduler() {
             ))}
             <Button onClick={saveAll} disabled={saving} className="w-full gap-2 mt-2">
               <CalendarClock className="w-4 h-4" />
-              {saving ? 'Saving…' : `Schedule ${entries.length} Upload${entries.length > 1 ? 's' : ''}`}
+              {saving ? (saveProgress || 'Saving…') : `Schedule ${entries.length} Upload${entries.length > 1 ? 's' : ''}`}
             </Button>
           </CardContent>
         </Card>
