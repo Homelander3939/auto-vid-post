@@ -474,21 +474,33 @@ async function askAI(
 async function sendTelegramMessage(
   telegram: AutomationParams['telegram'], text: string,
 ): Promise<boolean> {
-  if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) return false;
-  const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${telegram.lovableApiKey}`,
-      'X-Connection-Api-Key': telegram.telegramApiKey!,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      chat_id: telegram.chatId,
-      text,
-      parse_mode: 'HTML',
-    }),
-  });
-  return response.ok;
+  if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) {
+    console.log('[Telegram] Message skipped — not configured. enabled:', telegram.enabled, 'chatId:', telegram.chatId);
+    return false;
+  }
+  try {
+    const numericChatId = Number(telegram.chatId);
+    console.log('[Telegram] Sending message to chat:', numericChatId, 'text:', text.substring(0, 80));
+    const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${telegram.lovableApiKey}`,
+        'X-Connection-Api-Key': telegram.telegramApiKey!,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: numericChatId,
+        text,
+        parse_mode: 'HTML',
+      }),
+    });
+    const data = await response.json();
+    console.log('[Telegram] Response:', response.status, JSON.stringify(data).substring(0, 200));
+    return response.ok;
+  } catch (e) {
+    console.error('[Telegram] Failed to send message:', e);
+    return false;
+  }
 }
 
 async function sendTelegramPhoto(
