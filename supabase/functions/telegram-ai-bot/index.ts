@@ -3,8 +3,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 const AI_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
-const MAX_RUNTIME_MS = 55_000;
-const MIN_REMAINING_MS = 5_000;
+const MAX_RUNTIME_MS = 20_000;
+const MIN_REMAINING_MS = 3_000;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
