@@ -933,13 +933,18 @@ async function agenticUpload(
     let action: AgentAction;
 
     try {
-      const deterministicAction = platform === 'youtube'
-        ? await getDeterministicYouTubeAction(sendCmd, params, fileUploaded)
-        : null;
+      let deterministicAction: AgentAction | null = null;
+      if (platform === 'youtube') {
+        deterministicAction = await getDeterministicYouTubeAction(sendCmd, params, fileUploaded, step);
+      } else if (platform === 'tiktok') {
+        deterministicAction = await getDeterministicTikTokAction(sendCmd, params, fileUploaded);
+      } else if (platform === 'instagram') {
+        deterministicAction = await getDeterministicInstagramAction(sendCmd, params, fileUploaded);
+      }
 
       if (deterministicAction) {
         action = deterministicAction;
-        console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — deterministic action selected.`);
+        console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — deterministic: ${action.reasoning}`);
       } else {
         console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — asking AI...`);
         action = await askAI(params.lovableApiKey, screenshot, pageInfo, taskPrompt, history);
