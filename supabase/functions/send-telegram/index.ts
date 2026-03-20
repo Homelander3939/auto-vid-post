@@ -7,6 +7,70 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function sendPhotoViaGateway({
+  lovableApiKey,
+  telegramApiKey,
+  chatId,
+  photoBase64,
+  mimeType,
+  caption,
+  parseMode,
+}: {
+  lovableApiKey: string;
+  telegramApiKey: string;
+  chatId: string | number;
+  photoBase64: string;
+  mimeType: string;
+  caption?: string;
+  parseMode: string;
+}) {
+  const bytes = base64ToBytes(photoBase64);
+  const boundary = `----lovable-${crypto.randomUUID()}`;
+  const enc = new TextEncoder();
+  const parts: Uint8Array[] = [];
+
+  parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`));
+  if (caption) {
+    parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`));
+    parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="parse_mode"\r\n\r\n${parseMode}\r\n`));
+  }
+  parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="screenshot.png"\r\nContent-Type: ${mimeType || 'image/png'}\r\n\r\n`));
+  parts.push(bytes);
+  parts.push(enc.encode(`\r\n--${boundary}--\r\n`));
+
+  const totalLen = parts.reduce((sum, p) => sum + p.length, 0);
+  const body = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const p of parts) {
+    body.set(p, offset);
+    offset += p.length;
+  }
+
+  const response = await fetch(`${GATEWAY_URL}/sendPhoto`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${lovableApiKey}`,
+      'X-Connection-Api-Key': telegramApiKey,
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+    },
+    body,
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data?.ok === false) {
+    throw new Error(`Telegram API call failed [${response.status}]: ${JSON.stringify(data)}`);
+  }
+
+  return data;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -19,10 +83,35 @@ serve(async (req) => {
     const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
     if (!TELEGRAM_API_KEY) throw new Error('TELEGRAM_API_KEY is not configured');
 
-    const { chat_id, text, parse_mode, action } = await req.json();
+    const { chat_id, text, parse_mode, action, photo_base64, photo_mime_type } = await req.json();
 
     // Ensure chat_id is a number for Telegram API
     const numericChatId = typeof chat_id === 'string' ? Number(chat_id) : chat_id;
+
+    // Photo upload path (used for obstacle screenshots)
+    if (photo_base64) {
+      if (!chat_id) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'chat_id is required when photo_base64 is provided' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const photoResult = await sendPhotoViaGateway({
+        lovableApiKey: LOVABLE_API_KEY,
+        telegramApiKey: TELEGRAM_API_KEY,
+        chatId: numericChatId,
+        photoBase64: photo_base64,
+        mimeType: photo_mime_type || 'image/png',
+        caption: text,
+        parseMode: parse_mode || 'HTML',
+      });
+
+      return new Response(
+        JSON.stringify({ success: true, message_id: photoResult.result?.message_id }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     // If action is specified (e.g. "typing"), send chat action instead of message
     if (action) {
