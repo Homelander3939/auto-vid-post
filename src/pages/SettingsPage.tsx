@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { useState, useEffect } from 'react';
-import { FolderOpen, Eye, EyeOff, Send, Info } from 'lucide-react';
+import { FolderOpen, Eye, EyeOff, Send, Info, Cloud, Monitor } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
 function PasswordInput({
@@ -41,6 +41,7 @@ function PasswordInput({
 
 const defaultSettings: AppSettings = {
   folderPath: '',
+  uploadMode: 'local',
   youtube: { email: '', password: '', enabled: false },
   tiktok: { email: '', password: '', enabled: false },
   instagram: { email: '', password: '', enabled: false },
@@ -87,14 +88,71 @@ export default function SettingsPage() {
     }));
   };
 
+  const isCloud = settings.uploadMode === 'cloud';
+
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Configure platform logins, watch folder, and notifications
+          Configure platform logins, upload mode, and notifications
         </p>
       </div>
+
+      {/* Upload Mode Toggle */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Upload Mode</CardTitle>
+          <CardDescription>
+            Choose how videos are uploaded to platforms
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setSettings((p) => ({ ...p, uploadMode: 'local' }))}
+              className={`flex flex-col items-center gap-2 rounded-lg border-2 p-4 transition-all ${
+                !isCloud
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:border-muted-foreground/40'
+              }`}
+            >
+              <Monitor className={`w-6 h-6 ${!isCloud ? 'text-primary' : 'text-muted-foreground'}`} />
+              <span className={`font-medium text-sm ${!isCloud ? 'text-primary' : 'text-muted-foreground'}`}>Local Mode</span>
+              <span className="text-xs text-muted-foreground text-center">
+                Uses Playwright on your PC. Requires local server running.
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettings((p) => ({ ...p, uploadMode: 'cloud' }))}
+              className={`flex flex-col items-center gap-2 rounded-lg border-2 p-4 transition-all ${
+                isCloud
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:border-muted-foreground/40'
+              }`}
+            >
+              <Cloud className={`w-6 h-6 ${isCloud ? 'text-primary' : 'text-muted-foreground'}`} />
+              <span className={`font-medium text-sm ${isCloud ? 'text-primary' : 'text-muted-foreground'}`}>Cloud Mode</span>
+              <span className="text-xs text-muted-foreground text-center">
+                Uses Browserbase remote browser. No local server needed.
+              </span>
+            </button>
+          </div>
+          {isCloud && (
+            <div className="mt-4 flex items-start gap-3 rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
+              <Cloud className="w-4 h-4 text-green-600 shrink-0 mt-0.5" />
+              <div className="text-green-800">
+                <p className="font-medium">Cloud mode active</p>
+                <p className="text-green-700 mt-0.5">
+                  Browserbase credentials are configured. Uploads will run in a remote browser — no local server needed.
+                </p>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* How it works */}
       <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm">
@@ -102,32 +160,35 @@ export default function SettingsPage() {
         <div className="text-blue-800">
           <p className="font-medium">How uploads work</p>
           <p className="text-blue-700 mt-0.5">
-            Your local server uses Playwright to open a real browser, log into each platform with your credentials below,
-            and upload videos automatically. You only need to log in manually the first time — sessions are saved.
+            {isCloud
+              ? 'Cloud mode uses a remote Browserbase browser to log into each platform and upload videos automatically. Sessions persist so you only log in once.'
+              : 'Your local server uses Playwright to open a real browser, log into each platform with your credentials below, and upload videos automatically. You only need to log in manually the first time — sessions are saved.'}
           </p>
         </div>
       </div>
 
-      {/* Folder Path */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <FolderOpen className="w-4 h-4" />
-            Video Watch Folder
-          </CardTitle>
-          <CardDescription>
-            Drop .mp4 + .txt pairs here — the local server picks them up automatically
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Input
-            value={settings.folderPath}
-            onChange={(e) => setSettings((p) => ({ ...p, folderPath: e.target.value }))}
-            placeholder="C:\Users\You\Videos\uploads"
-            className="font-mono"
-          />
-        </CardContent>
-      </Card>
+      {/* Folder Path — local mode only */}
+      {!isCloud && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <FolderOpen className="w-4 h-4" />
+              Video Watch Folder
+            </CardTitle>
+            <CardDescription>
+              Drop .mp4 + .txt pairs here — the local server picks them up automatically
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Input
+              value={settings.folderPath}
+              onChange={(e) => setSettings((p) => ({ ...p, folderPath: e.target.value }))}
+              placeholder="C:\Users\You\Videos\uploads"
+              className="font-mono"
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {/* Platform Credentials */}
       {(['youtube', 'tiktok', 'instagram'] as const).map((platform) => (
@@ -137,9 +198,9 @@ export default function SettingsPage() {
               <div>
                 <CardTitle className="text-base capitalize">{platform}</CardTitle>
                 <CardDescription>
-                  {platform === 'youtube' && 'YouTube Studio login — Playwright opens studio.youtube.com'}
-                  {platform === 'tiktok' && 'TikTok Creator login — Playwright opens tiktok.com/creator'}
-                  {platform === 'instagram' && 'Instagram login — Playwright opens instagram.com'}
+                  {platform === 'youtube' && 'YouTube Studio login — browser opens studio.youtube.com'}
+                  {platform === 'tiktok' && 'TikTok Creator login — browser opens tiktok.com/creator'}
+                  {platform === 'instagram' && 'Instagram login — browser opens instagram.com'}
                 </CardDescription>
               </div>
               <Switch
@@ -151,7 +212,7 @@ export default function SettingsPage() {
           {settings[platform].enabled && (
             <CardContent className="space-y-4">
               <p className="text-xs text-muted-foreground bg-secondary p-3 rounded-lg">
-                💡 First upload will open a visible browser window. Log in manually if needed — the session is saved for all future uploads.
+                💡 First upload will open a browser window. Log in manually if needed — the session is saved for all future uploads.
               </p>
               <div className="space-y-2">
                 <Label>Email / Username</Label>

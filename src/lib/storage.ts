@@ -5,6 +5,7 @@ import { supabase } from '@/integrations/supabase/client';
 
 export interface AppSettings {
   folderPath: string;
+  uploadMode: 'local' | 'cloud';
   youtube: { email: string; password: string; enabled: boolean };
   tiktok: { email: string; password: string; enabled: boolean };
   instagram: { email: string; password: string; enabled: boolean };
@@ -61,6 +62,7 @@ export interface ScheduledUpload {
 
 const defaultSettings: AppSettings = {
   folderPath: '',
+  uploadMode: 'local',
   youtube: { email: '', password: '', enabled: false },
   tiktok: { email: '', password: '', enabled: false },
   instagram: { email: '', password: '', enabled: false },
@@ -79,6 +81,7 @@ export async function getSettings(): Promise<AppSettings> {
 
   return {
     folderPath: data.folder_path,
+    uploadMode: (data as any).upload_mode || 'local',
     youtube: { email: data.youtube_email, password: data.youtube_password, enabled: data.youtube_enabled },
     tiktok: { email: data.tiktok_email, password: data.tiktok_password, enabled: data.tiktok_enabled },
     instagram: { email: data.instagram_email, password: data.instagram_password, enabled: data.instagram_enabled },
@@ -91,6 +94,7 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
     .from('app_settings')
     .update({
       folder_path: settings.folderPath,
+      upload_mode: settings.uploadMode,
       youtube_email: settings.youtube.email,
       youtube_password: settings.youtube.password,
       youtube_enabled: settings.youtube.enabled,
@@ -103,7 +107,7 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
       telegram_bot_token: settings.telegram.botToken,
       telegram_chat_id: settings.telegram.chatId,
       telegram_enabled: settings.telegram.enabled,
-    })
+    } as any)
     .eq('id', 1);
 }
 
