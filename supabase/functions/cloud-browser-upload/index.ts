@@ -153,22 +153,7 @@ serve(async (req) => {
 async function runBrowserAutomation(
   connectUrl: string,
   platform: string,
-  params: {
-    videoUrl: string;
-    title: string;
-    description: string;
-    tags: string[];
-    email: string;
-    password: string;
-    jobId: string;
-    supabase: any;
-    telegram: {
-      enabled: boolean;
-      chatId: string | number | null;
-      lovableApiKey?: string;
-      telegramApiKey?: string;
-    };
-  }
+  params: AutomationParams
 ): Promise<{ url?: string; message: string }> {
   return new Promise((resolve, reject) => {
     let cmdId = 1;
@@ -200,7 +185,7 @@ async function runBrowserAutomation(
       });
     };
 
-    const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+    const wait: Wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
     ws.onopen = async () => {
       try {
@@ -309,6 +294,22 @@ async function runBrowserAutomation(
 
 type SendCmd = (method: string, params?: any) => Promise<any>;
 type Wait = (ms: number) => Promise<void>;
+type AutomationParams = {
+  videoUrl: string;
+  title: string;
+  description: string;
+  tags: string[];
+  email: string;
+  password: string;
+  jobId: string;
+  supabase: any;
+  telegram: {
+    enabled: boolean;
+    chatId: string | number | null;
+    lovableApiKey?: string;
+    telegramApiKey?: string;
+  };
+};
 
 async function navigateTo(sendCmd: SendCmd, wait: Wait, url: string): Promise<void> {
   await sendCmd('Page.navigate', { url });
@@ -479,16 +480,7 @@ async function trySubmitVerificationCode(sendCmd: SendCmd, wait: Wait, code: str
 async function requestVerificationHelp(
   sendCmd: SendCmd,
   wait: Wait,
-  params: {
-    jobId: string;
-    supabase: any;
-    telegram: {
-      enabled: boolean;
-      chatId: string | number | null;
-      lovableApiKey?: string;
-      telegramApiKey?: string;
-    };
-  },
+  params: AutomationParams,
   platform: string,
 ) {
   if (!params.telegram.enabled || !params.telegram.chatId) {
@@ -512,7 +504,7 @@ async function requestVerificationHelp(
 async function automateYouTube(
   sendCmd: SendCmd,
   wait: Wait,
-  params: { videoUrl: string; title: string; description: string; tags: string[]; email: string; password: string }
+  params: AutomationParams,
 ): Promise<{ url?: string; message: string }> {
   console.log('[YouTube] Navigating to upload page...');
   await navigateTo(sendCmd, wait, 'https://studio.youtube.com/channel/UC/videos/upload');
@@ -688,7 +680,7 @@ async function automateYouTube(
 async function automateTikTok(
   sendCmd: SendCmd,
   wait: Wait,
-  params: { videoUrl: string; title: string; description: string; tags: string[]; email: string; password: string }
+  params: AutomationParams,
 ): Promise<{ url?: string; message: string }> {
   console.log('[TikTok] Navigating to TikTok Creator Center...');
   await navigateTo(sendCmd, wait, 'https://www.tiktok.com/creator#/upload?scene=creator_center');
@@ -815,7 +807,7 @@ async function automateTikTok(
 async function automateInstagram(
   sendCmd: SendCmd,
   wait: Wait,
-  params: { videoUrl: string; title: string; description: string; tags: string[]; email: string; password: string }
+  params: AutomationParams,
 ): Promise<{ url?: string; message: string }> {
   console.log('[Instagram] Navigating to Instagram...');
   await navigateTo(sendCmd, wait, 'https://www.instagram.com/');
