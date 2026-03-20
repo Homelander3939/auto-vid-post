@@ -11,6 +11,7 @@ const navItems = [
   { to: '/queue', icon: Upload, label: 'Upload Queue' },
   { to: '/schedule', icon: Clock, label: 'Schedule' },
   { to: '/chat', icon: MessageSquare, label: 'AI Chat' },
+  { to: '/browser', icon: Globe, label: 'Browser' },
   { to: '/settings', icon: Settings, label: 'Settings' },
   { to: '/setup', icon: BookOpen, label: 'Setup Guide' },
 ];

@@ -34,11 +34,11 @@ export default function BrowserSessions() {
     queryFn: async () => {
       const { data } = await supabase
         .from('upload_jobs')
-        .select('id, title, video_file_name, status, platform_results, browserbase_session_id, created_at, completed_at')
-        .not('browserbase_session_id', 'is', null)
+        .select('id, title, video_file_name, status, platform_results, created_at, completed_at')
         .order('created_at', { ascending: false })
         .limit(20);
-      return data || [];
+      // Filter to only jobs with browserbase_session_id (cast to any since column is new)
+      return ((data || []) as any[]).filter((j: any) => j.browserbase_session_id);
     },
     refetchInterval: 5000,
   });
