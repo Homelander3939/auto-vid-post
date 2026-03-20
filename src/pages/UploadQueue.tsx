@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getQueue, getSettings, getScheduledUploads, deleteScheduledUpload, retryJob, deleteJob, clearQueue, stopJob, getVideoUrl, type UploadJob, type PlatformResult, type ScheduledUpload } from '@/lib/storage';
+import { getQueue, getSettings, getScheduledUploads, getSchedules, deleteScheduledUpload, retryJob, deleteJob, clearQueue, stopJob, getVideoUrl, type UploadJob, type PlatformResult, type ScheduledUpload, type ScheduleConfig } from '@/lib/storage';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp, StopCircle, CalendarClock } from 'lucide-react';
+import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp, StopCircle, CalendarClock, Repeat } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const statusColors: Record<string, string> = {
@@ -403,6 +403,12 @@ export default function UploadQueue() {
     refetchInterval: 5000,
   });
 
+  const { data: recurringSchedules = [] } = useQuery({
+    queryKey: ['schedules'],
+    queryFn: () => getSchedules(),
+    refetchInterval: 10000,
+  });
+
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: () => getSettings(),
@@ -410,6 +416,7 @@ export default function UploadQueue() {
 
   const isCloud = settings?.uploadMode === 'cloud';
   const upcomingUploads = scheduledUploads.filter(s => s.status === 'scheduled');
+  const activeRecurring = recurringSchedules.filter(s => s.enabled);
 
   const handleClear = async () => {
     for (const job of jobs) {
@@ -487,6 +494,35 @@ export default function UploadQueue() {
         </div>
       )}
 
+      {/* Active recurring schedules */}
+      {activeRecurring.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+            <Repeat className="w-4 h-4" /> Active Recurring Schedules ({activeRecurring.length})
+          </h2>
+          {activeRecurring.map((sched) => (
+            <Card key={sched.id} className="overflow-hidden border-dashed">
+              <CardContent className="py-3 px-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <Repeat className="w-4 h-4 text-primary shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{sched.name || 'Recurring Schedule'}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Cron: {sched.cronExpression} · {sched.platforms.join(', ')}
+                        {sched.folderPath && ` · ${sched.folderPath}`}
+                        {sched.endAt && ` · ends ${new Date(sched.endAt).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                  </div>
+                  <Badge className="bg-emerald-100 text-emerald-700" variant="secondary">active</Badge>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
       {/* Upcoming scheduled uploads */}
       {upcomingUploads.length > 0 && (
         <div className="space-y-3">
@@ -499,7 +535,7 @@ export default function UploadQueue() {
         </div>
       )}
 
-      {jobs.length === 0 && upcomingUploads.length === 0 && !isLoading && (
+      {jobs.length === 0 && upcomingUploads.length === 0 && activeRecurring.length === 0 && !isLoading && (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <Inbox className="w-10 h-10 text-muted-foreground mb-4" />
           <h2 className="text-lg font-semibold mb-1">Queue is empty</h2>
