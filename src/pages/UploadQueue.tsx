@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getQueue, retryJob, deleteJob, clearQueue, getVideoUrl, type UploadJob, type PlatformResult } from '@/lib/storage';
+import { getQueue, getSettings, retryJob, deleteJob, clearQueue, getVideoUrl, type UploadJob, type PlatformResult } from '@/lib/storage';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Pencil, Save, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const statusColors: Record<string, string> = {
@@ -22,7 +22,7 @@ const statusColors: Record<string, string> = {
 };
 
 const statusLabels: Record<string, string> = {
-  pending: 'waiting for server',
+  pending: 'queued',
   uploading: 'uploading…',
   processing: 'processing…',
   success: 'uploaded',
@@ -299,6 +299,13 @@ export default function UploadQueue() {
     refetchInterval: 3000,
   });
 
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => getSettings(),
+  });
+
+  const isCloud = settings?.uploadMode === 'cloud';
+
   const handleClear = async () => {
     await clearQueue();
     queryClient.invalidateQueries({ queryKey: ['queue'] });
@@ -325,12 +332,24 @@ export default function UploadQueue() {
       </div>
 
       {hasPending && (
-        <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
-          <Monitor className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+        <div className={`flex items-start gap-3 rounded-lg border p-4 text-sm ${
+          isCloud
+            ? 'border-emerald-200 bg-emerald-50'
+            : 'border-amber-200 bg-amber-50'
+        }`}>
+          {isCloud ? (
+            <Cloud className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+          ) : (
+            <Monitor className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          )}
           <div>
-            <p className="font-medium text-amber-800">Waiting for local server</p>
-            <p className="text-amber-700 mt-0.5">
-              Pending jobs will be processed when your local server is running.
+            <p className={`font-medium ${isCloud ? 'text-emerald-800' : 'text-amber-800'}`}>
+              {isCloud ? 'Cloud upload queued' : 'Waiting for local server'}
+            </p>
+            <p className={`mt-0.5 ${isCloud ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {isCloud
+                ? 'Pending jobs will be uploaded via Browserbase cloud browser automatically.'
+                : 'Pending jobs will be processed when your local server is running.'}
             </p>
           </div>
         </div>
