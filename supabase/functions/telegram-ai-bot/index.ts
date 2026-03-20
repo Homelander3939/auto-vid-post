@@ -152,10 +152,11 @@ async function extractMessageContent(
   message: any,
   lovableKey: string,
   telegramKey: string,
-): Promise<{ text: string; images: TelegramMediaRef[]; files: TelegramMediaRef[]; hasMedia: boolean }> {
+): Promise<{ text: string; images: TelegramMediaRef[]; files: TelegramMediaRef[]; audioDataUrl: string | null; hasMedia: boolean }> {
   const text = message.text || message.caption || '';
   const images: TelegramMediaRef[] = [];
   const files: TelegramMediaRef[] = [];
+  let audioDataUrl: string | null = null;
 
   if (message.photo?.length) {
     const largest = message.photo[message.photo.length - 1];
@@ -188,18 +189,38 @@ async function extractMessageContent(
     }
   }
 
-  const voiceLike = message.voice || message.audio || message.video || null;
+  const voiceLike = message.voice || message.audio || null;
   if (voiceLike?.file_id) {
     const download = await fetchTelegramFileBytes(voiceLike.file_id, lovableKey, telegramKey);
     if (download) {
-      const guessedType = message.voice
-        ? 'audio/ogg'
-        : message.audio?.mime_type || message.video?.mime_type || download.mimeType;
+      const guessedType = message.voice ? 'audio/ogg' : message.audio?.mime_type || download.mimeType;
+
+      // Keep base64 for AI transcription
+      let binary = '';
+      for (let i = 0; i < download.bytes.length; i++) {
+        binary += String.fromCharCode(download.bytes[i]);
+      }
+      audioDataUrl = `data:${guessedType};base64,${btoa(binary)}`;
+
       const media = await uploadTelegramMediaToStorage(
         supabase,
         download.bytes,
         guessedType,
-        message.audio?.file_name || `telegram-${message.voice ? 'voice' : message.video ? 'video' : 'audio'}-${Date.now()}.${extFromMime(guessedType)}`,
+        message.audio?.file_name || `telegram-${message.voice ? 'voice' : 'audio'}-${Date.now()}.${extFromMime(guessedType)}`,
+      );
+      if (media) files.push(media);
+    }
+  }
+
+  const videoMsg = message.video || message.video_note || null;
+  if (videoMsg?.file_id) {
+    const download = await fetchTelegramFileBytes(videoMsg.file_id, lovableKey, telegramKey);
+    if (download) {
+      const media = await uploadTelegramMediaToStorage(
+        supabase,
+        download.bytes,
+        message.video?.mime_type || download.mimeType,
+        `telegram-video-${Date.now()}.mp4`,
       );
       if (media) files.push(media);
     }
@@ -209,6 +230,7 @@ async function extractMessageContent(
     text,
     images,
     files,
+    audioDataUrl,
     hasMedia: images.length > 0 || files.length > 0,
   };
 }
@@ -280,7 +302,7 @@ serve(async (req) => {
       if (!message) continue;
 
       const chatId = message.chat.id;
-      const { text: userText, images, files, hasMedia } = await extractMessageContent(
+      const { text: userText, images, files, audioDataUrl, hasMedia } = await extractMessageContent(
         supabase,
         message,
         LOVABLE_API_KEY,
@@ -291,8 +313,9 @@ serve(async (req) => {
 
       const displayText = userText
         || (images.length > 0 ? '📷 [Photo]'
-          : files.some((f) => f.type.startsWith('audio/')) ? '🎤 [Voice message]'
-            : '📎 [File]');
+          : audioDataUrl ? '🎤 [Voice message]'
+            : files.length > 0 ? '📎 [File]'
+              : '');
 
       await supabase.from('telegram_messages').upsert({
         update_id: update.update_id,
@@ -317,12 +340,22 @@ serve(async (req) => {
         content: m.text || '',
       }));
 
-      const currentAiMsg: any = {
-        role: 'user',
-        content: userText || (images.length ? 'What do you see in this image?' : 'I sent a file.'),
-      };
+      // Build the AI message with multimodal content
+      const currentAiMsg: any = { role: 'user', content: '' };
 
-      if (images.length > 0) {
+      if (audioDataUrl) {
+        // Pass audio to Gemini for transcription + response
+        const parts: any[] = [];
+        parts.push({
+          type: 'text',
+          text: userText || 'Please transcribe this voice message and respond to what the person is saying. First show the transcription, then respond.',
+        });
+        parts.push({
+          type: 'image_url',
+          image_url: { url: audioDataUrl },
+        });
+        currentAiMsg.content = parts;
+      } else if (images.length > 0) {
         const parts: any[] = [];
         parts.push({ type: 'text', text: userText || 'Please analyze this image in detail.' });
         images.forEach((img) => parts.push({ type: 'image_url', image_url: { url: img.url } }));
@@ -331,6 +364,8 @@ serve(async (req) => {
         currentAiMsg.content = `${userText || 'I sent a file.'}\n\nAttached files:\n${files
           .map((f) => `- ${f.name} (${f.type}, ${Math.round((f.size || 0) / 1024)}KB)`)
           .join('\n')}`;
+      } else {
+        currentAiMsg.content = userText || '';
       }
 
       contextMessages.push(currentAiMsg);
@@ -347,7 +382,8 @@ serve(async (req) => {
       });
 
       const appContext = await getAppContext(supabase);
-      const model = images.length > 0 ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
+      // Use gemini-2.5-flash for any media (handles audio + images)
+      const model = (images.length > 0 || audioDataUrl) ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
 
       let aiReply = "Sorry, I couldn't process your message right now.";
       try {
@@ -368,9 +404,9 @@ ${appContext}
 
 You help users manage video uploads to YouTube, TikTok, and Instagram. Be concise for Telegram format.
 When users ask about queued jobs, scheduled uploads, or settings — USE THE LIVE DATA ABOVE to answer accurately.
-When users send images, analyze what is ACTUALLY in the image and avoid guessing.
-When users send non-image files/voice, acknowledge receipt and explain clearly if transcription/content extraction is not available.
-NEVER say you don't have access to the data. You DO have access.
+When users send images, analyze what is ACTUALLY in the image in detail.
+When users send voice messages, transcribe them first (show the transcription clearly), then respond to the content.
+NEVER say you don't have access to the data or can't transcribe audio. You CAN do both.
 Keep responses short and readable for Telegram.`,
               },
               ...contextMessages,
