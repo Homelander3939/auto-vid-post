@@ -114,6 +114,26 @@ export default function SettingsPage() {
     setDemoTextContent(sampleTextContent);
   };
 
+  const handleVideoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setDemoVideoName(file.name);
+    setDemoVideoFile(file);
+    toast({ title: `Video selected: ${file.name}` });
+  };
+
+  const handleTextFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setDemoTextContent(text);
+      toast({ title: `Text file loaded: ${file.name}` });
+    } catch {
+      toast({ title: 'Could not read text file', variant: 'destructive' });
+    }
+  };
+
   const updatePlatform = (
     platform: 'youtube' | 'tiktok' | 'instagram',
     field: string,
