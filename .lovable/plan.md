@@ -1,75 +1,78 @@
 
 
-# Video Uploader App — Plan
+## Plan: Integrate Browserbase for Cloud Browser Automation
 
-## Architecture
+### Overview
+Add a **Cloud Mode** to the app that uses Browserbase's remote browsers for video uploads, so you don't need the local server running. Local mode remains unchanged.
 
-The app has two parts that run locally on your PC:
-
-```text
-┌─────────────────────────────────┐
-│  React Frontend (Vite, :8080)   │  ← I build this in Lovable
-│  - Configure folder path        │
-│  - Platform credentials setup   │
-│  - Upload queue & status        │
-│  - Scheduled upload management  │
-└──────────┬──────────────────────┘
-           │ HTTP API calls
-┌──────────▼──────────────────────┐
-│  Local Node.js Server (:3001)   │  ← I create these files too
-│  - Read folder (video + .txt)   │
-│  - Parse text file for metadata │
-│  - Launch Playwright browser    │
-│  - Automate YouTube Studio      │
-│  - Automate TikTok Creator      │
-│  - Automate Instagram Creator   │
-│  - Send Telegram notifications  │
-│  - Cron scheduler for retries   │
-└─────────────────────────────────┘
-```
-
-You pull from GitHub, run `npm install && npm start`, open `localhost:8080`.
-
-## What I Build (React Frontend)
-
-1. **Settings Page** — Configure: local folder path, YouTube/TikTok/Instagram credentials, Telegram bot token + chat ID
-2. **Dashboard** — Shows detected video + text file from folder, parsed metadata preview (title, description, tags), upload status per platform
-3. **Upload Queue** — Trigger uploads, view progress/errors, retry failed uploads
-4. **Schedule Page** — Set cron schedule for auto-uploads, view scheduled jobs
-
-## What I Build (Local Server — `server/` directory)
-
-1. **Folder watcher** — Reads specified folder, finds latest `.mp4`/`.mov` and `.txt` file
-2. **Text parser** — Extracts title, description, hashtags/keywords from text file (configurable format)
-3. **Playwright automation scripts** for each platform:
-   - YouTube Studio: login, upload video, fill title/description/tags, publish
-   - TikTok: login, upload video, fill details, post
-   - Instagram: login, upload reel, fill caption, share
-4. **Telegram notifier** — Sends success link or error message to your bot
-5. **Cron scheduler** — node-cron for scheduled/retry uploads
-6. **Express API** — endpoints the frontend calls
-
-## Limitations to Know
-
-- **Browser automation is fragile**: Platform UI changes can break scripts. YouTube is most reliable; TikTok and Instagram change frequently.
-- **Login sessions**: Playwright will use a persistent browser context so you only log in once manually, then sessions persist.
-- **The server files I create won't run in Lovable preview** — they only work when you clone and run locally.
-
-## Implementation Steps
-
-1. Build the React frontend (settings, dashboard, queue, schedule pages)
-2. Create `server/` directory with Express server, folder reader, text parser
-3. Create Playwright automation scripts for YouTube, TikTok, Instagram
-4. Add Telegram notification module
-5. Add cron scheduling with node-cron
-6. Add `package.json` scripts and setup instructions in README
-
-## Text File Format (Default)
+### Architecture
 
 ```text
-Title: My Video Title
-Description: Video description here
-Tags: tag1, tag2, tag3
-Platforms: youtube, tiktok, instagram
+┌─────────────────┐     ┌──────────────────┐     ┌───────────────┐
+│  Upload Job      │────▶│  process-uploads  │────▶│  Browserbase   │
+│  (pending)       │     │  Edge Function    │     │  Remote Browser│
+│  mode: cloud     │     │  Creates session  │     │  (Playwright)  │
+└─────────────────┘     │  Sends CDP cmds   │     └───────────────┘
+                        └──────────────────┘
 ```
+
+### Steps
+
+**1. Store Browserbase credentials as secrets**
+- Add `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` as runtime secrets via the secrets tool
+- These will be available in edge functions
+
+**2. Add upload mode to database**
+- Add `upload_mode` column (`local` or `cloud`) to `app_settings` table
+- Default: `local` (current behavior)
+
+**3. Update Settings UI**
+- Add a mode toggle card at the top of Settings: **Local Mode** vs **Cloud Mode**
+- Local mode: shows current setup (folder path, Playwright credentials info)
+- Cloud mode: shows Browserbase connection status, no local server needed
+- Both modes share the same platform credentials (YouTube/TikTok/Instagram login)
+
+**4. Create `cloud-browser-upload` edge function**
+- Uses Browserbase REST API to create a browser session (`POST https://api.browserbase.com/v1/sessions`)
+- Connects to the browser via WebSocket CDP (Chrome DevTools Protocol)
+- Implements upload automation for each platform using raw CDP commands:
+  - Navigate to platform upload page
+  - Fill in credentials if needed
+  - Upload video file (download from Supabase storage, pass to browser)
+  - Fill metadata (title, description, tags)
+  - Click publish
+- Returns success/failure with video URL
+- Uses Browserbase's **Contexts** feature to persist login sessions between uploads
+
+**5. Update `process-uploads` edge function**
+- Check `upload_mode` from settings
+- If `cloud`: invoke `cloud-browser-upload` function for each platform
+- If `local`: keep current behavior (API-based uploads or wait for local server)
+
+**6. Update AI assistant context**
+- AI can tell user which mode is active
+- AI can switch modes via tool calls
+
+### Technical Details
+
+**CDP over WebSocket in Deno:**
+- Browserbase returns a `connectUrl` (WebSocket) when creating a session
+- Use native Deno `WebSocket` to connect
+- Send CDP commands: `Page.navigate`, `Runtime.evaluate`, `DOM.querySelector`, `Input.dispatchMouseEvent`, etc.
+- Handle file uploads via `Page.setFileInputFiles` CDP method
+
+**Session persistence with Browserbase Contexts:**
+- Create a context per platform (YouTube, TikTok, Instagram)
+- Store context IDs in `app_settings` so login sessions persist across uploads
+- No need to re-login every time
+
+**Platform upload flows (CDP-based):**
+Each platform upload follows: navigate → check login → login if needed → upload file → fill metadata → publish. Same logic as local Playwright scripts but using CDP commands.
+
+### Files to create/modify
+- **New**: `supabase/functions/cloud-browser-upload/index.ts` — Browserbase CDP automation
+- **Modify**: `supabase/functions/process-uploads/index.ts` — route to cloud or local
+- **Modify**: `src/pages/SettingsPage.tsx` — add mode toggle
+- **Modify**: `src/lib/storage.ts` — add upload_mode to AppSettings
+- **Migration**: add `upload_mode` column to `app_settings`
 
