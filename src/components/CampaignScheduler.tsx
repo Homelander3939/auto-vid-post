@@ -53,7 +53,7 @@ export default function CampaignScheduler() {
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveProgress, setSaveProgress] = useState('');
-  const textInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
 
   // Source mode: manual file upload or folder path (local only)
   const [sourceMode, setSourceMode] = useState<'file' | 'folder'>('file');
