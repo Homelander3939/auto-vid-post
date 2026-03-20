@@ -84,13 +84,16 @@ const tools = [
 async function executeTool(supabase: any, name: string, args: any): Promise<string> {
   switch (name) {
     case 'create_upload_job': {
+      const platforms = args.target_platforms || [];
+      const platformResults = platforms.map((p: string) => ({ name: p, status: 'pending' }));
       const { data, error } = await supabase.from('upload_jobs').insert({
         video_file_name: args.video_file_name, title: args.title || '', description: args.description || '',
-        tags: args.tags || [], target_platforms: args.target_platforms || [], status: 'pending',
+        tags: args.tags || [], target_platforms: platforms, status: 'pending',
         video_storage_path: args.video_storage_path || null,
+        platform_results: platformResults,
       }).select().single();
-      if (error) return `❌ Failed: ${error.message}`;
-      return `✅ Job created: "${data.title}" → ${data.target_platforms.join(', ')} [pending]`;
+      if (error) return `Failed: ${error.message}`;
+      return `Done! Queued "${data.title}" for instant upload to ${data.target_platforms.join(', ')}.\nTitle: ${data.title}\nPlatforms: ${data.target_platforms.join(', ')}\nStatus: Pending`;
     }
     case 'schedule_upload': {
       const { data, error } = await supabase.from('scheduled_uploads').insert({
@@ -386,7 +389,14 @@ async function extractMessageContent(
 }
 
 function sanitizeTelegramText(text: string): string {
-  return text.replace(/\u0000/g, '').slice(0, 3900);
+  return text
+    .replace(/\u0000/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, ''))
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .slice(0, 3900);
 }
 
 serve(async (req) => {
@@ -549,7 +559,12 @@ When users ask you to do something (upload, schedule, retry, delete, change cron
 When users send images, analyze them in detail.
 When users send voice messages, transcribe them first, then respond.
 NEVER say you can't do something. You CAN perform actions and access data.
-Keep responses concise for Telegram.`;
+
+FORMATTING RULES FOR TELEGRAM:
+- Do NOT use markdown formatting (no ** or __ or # or \`\`\`).
+- Use plain text only.
+- Use line breaks and emoji for structure instead of markdown.
+- Keep responses concise.`;
 
       let aiReply = "Sorry, I couldn't process your message right now.";
       try {
