@@ -28,6 +28,9 @@ serve(async (req) => {
       );
     }
 
+    // Ensure chat_id is a number for Telegram API
+    const numericChatId = typeof chat_id === 'string' ? Number(chat_id) : chat_id;
+
     const response = await fetch(`${GATEWAY_URL}/sendMessage`, {
       method: 'POST',
       headers: {
@@ -36,7 +39,7 @@ serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        chat_id,
+        chat_id: numericChatId,
         text,
         parse_mode: parse_mode || 'HTML',
       }),
