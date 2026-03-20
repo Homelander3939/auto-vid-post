@@ -1,0 +1,1 @@
+ALTER TABLE public.app_settings ADD COLUMN upload_mode text NOT NULL DEFAULT 'local';

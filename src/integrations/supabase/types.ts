@@ -29,6 +29,7 @@ export type Database = {
           tiktok_enabled: boolean
           tiktok_password: string
           updated_at: string
+          upload_mode: string
           youtube_email: string
           youtube_enabled: boolean
           youtube_password: string
@@ -47,6 +48,7 @@ export type Database = {
           tiktok_enabled?: boolean
           tiktok_password?: string
           updated_at?: string
+          upload_mode?: string
           youtube_email?: string
           youtube_enabled?: boolean
           youtube_password?: string
@@ -65,6 +67,7 @@ export type Database = {
           tiktok_enabled?: boolean
           tiktok_password?: string
           updated_at?: string
+          upload_mode?: string
           youtube_email?: string
           youtube_enabled?: boolean
           youtube_password?: string
