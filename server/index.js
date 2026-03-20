@@ -314,6 +314,91 @@ async function processScheduledUploads() {
   }
 }
 
+// --- Recurring schedule: auto-pick from folder ---
+let lastRecurringRunMinute = -1;
+
+async function processRecurringSchedule() {
+  try {
+    const { data: config } = await supabase.from('schedule_config').select('*').eq('id', 1).single();
+    if (!config || !config.enabled) return;
+
+    // Check end_at expiry
+    if (config.end_at && new Date(config.end_at) < new Date()) {
+      console.log('[Recurring] Schedule expired, disabling');
+      await supabase.from('schedule_config').update({ enabled: false }).eq('id', 1);
+      return;
+    }
+
+    if (!config.folder_path) return;
+
+    // Parse cron to check if NOW matches
+    const now = new Date();
+    const currentMinute = now.getMinutes();
+    const currentHour = now.getHours();
+    const currentDow = now.getDay();
+    const [cronMin, cronHr, , , cronDow] = config.cron_expression.split(' ');
+
+    const minuteMatch = cronMin === '*' || parseInt(cronMin) === currentMinute;
+    const hourMatch = cronHr === '*'
+      || (cronHr.startsWith('*/') ? currentHour % parseInt(cronHr.replace('*/', '')) === 0 : parseInt(cronHr) === currentHour);
+    const dowMatch = cronDow === '*' || cronDow.split(',').map(Number).includes(currentDow);
+
+    if (!minuteMatch || !hourMatch || !dowMatch) return;
+
+    // Prevent running multiple times in the same minute
+    const minuteKey = currentHour * 60 + currentMinute;
+    if (lastRecurringRunMinute === minuteKey) return;
+    lastRecurringRunMinute = minuteKey;
+
+    console.log(`[Recurring] Cron matched at ${now.toISOString()}, scanning folder: ${config.folder_path}`);
+
+    const { videoFile, textFile } = scanFolder(config.folder_path);
+    if (!videoFile) {
+      console.log('[Recurring] No video file found in folder');
+      return;
+    }
+
+    let title = videoFile;
+    let description = '';
+    let tags = [];
+
+    if (textFile) {
+      const meta = parseTextFile(path.join(config.folder_path, textFile));
+      if (meta.title) title = meta.title;
+      if (meta.description) description = meta.description;
+      if (meta.tags?.length) tags = meta.tags;
+    }
+
+    const platforms = config.platforms || ['youtube', 'tiktok', 'instagram'];
+    const platformResults = platforms.map(name => ({ name, status: 'pending' }));
+
+    const { data: job, error } = await supabase
+      .from('upload_jobs')
+      .insert({
+        video_file_name: videoFile,
+        video_storage_path: null,
+        title,
+        description,
+        tags,
+        target_platforms: platforms,
+        status: 'pending',
+        platform_results: platformResults,
+      })
+      .select()
+      .single();
+
+    if (error || !job) {
+      console.error('[Recurring] Failed to create job:', error);
+      return;
+    }
+
+    console.log(`[Recurring] Created job ${job.id} for ${videoFile}`);
+    await processJob(job.id);
+  } catch (e) {
+    console.error('[Recurring] Error:', e.message);
+  }
+}
+
 // --- Stale job cleanup ---
 async function fixStaleJobs() {
   const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -325,7 +410,7 @@ async function fixStaleJobs() {
 
   if (!staleJobs?.length) return;
   for (const stale of staleJobs) {
-    if (processingJobs.has(stale.id)) continue; // Still actively processing
+    if (processingJobs.has(stale.id)) continue;
     const pr = stale.platform_results || [];
     let changed = false;
     for (const p of pr) {
