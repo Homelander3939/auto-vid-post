@@ -2,7 +2,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
-const { smartClick, smartFill, waitForStateChange } = require('./smart-agent');
+const { smartClick, smartFill, waitForStateChange, analyzePage } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube');
 const YT_STUDIO_URL = 'https://studio.youtube.com';
@@ -173,6 +173,137 @@ function isLikelyYouTubeUrl(url) {
   return /youtube\.com\/(watch\?v=|shorts\/)|youtu\.be\//i.test(value);
 }
 
+function extractYouTubeVideoId(value) {
+  const input = String(value || '').trim();
+  if (!input) return '';
+
+  const watchMatch = input.match(/[?&]v=([a-zA-Z0-9_-]{11})/i);
+  if (watchMatch?.[1]) return watchMatch[1];
+
+  const shortMatch = input.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/i);
+  if (shortMatch?.[1]) return shortMatch[1];
+
+  const shortsMatch = input.match(/\/shorts\/([a-zA-Z0-9_-]{11})/i);
+  if (shortsMatch?.[1]) return shortsMatch[1];
+
+  const studioMatch = input.match(/\/video\/([a-zA-Z0-9_-]{11})\//i);
+  if (studioMatch?.[1]) return studioMatch[1];
+
+  return '';
+}
+
+function toWatchUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  if (isLikelyYouTubeUrl(raw)) {
+    const id = extractYouTubeVideoId(raw);
+    return id ? `https://www.youtube.com/watch?v=${id}` : raw;
+  }
+
+  const id = extractYouTubeVideoId(raw);
+  return id ? `https://www.youtube.com/watch?v=${id}` : '';
+}
+
+async function captureVideoUrlCandidate(page, currentUrl = '') {
+  const current = toWatchUrl(currentUrl);
+  if (current) return current;
+
+  const fromPageUrl = toWatchUrl(page.url());
+  if (fromPageUrl) return fromPageUrl;
+
+  const fromDom = await page.evaluate(() => {
+    const candidates = [];
+    const nodes = document.querySelectorAll('a[href], input[value], ytcp-video-info a[href]');
+    for (const node of nodes) {
+      const href = (node.getAttribute('href') || '').trim();
+      const value = (node.getAttribute('value') || '').trim();
+      const text = (node.textContent || '').trim();
+      if (href) candidates.push(href);
+      if (value) candidates.push(value);
+      if (text) candidates.push(text);
+    }
+    candidates.push(window.location.href || '');
+    return candidates;
+  }).catch(() => []);
+
+  for (const candidate of (Array.isArray(fromDom) ? fromDom : [])) {
+    const normalized = toWatchUrl(candidate);
+    if (normalized) return normalized;
+  }
+
+  return '';
+}
+
+async function assessYouTubePostPublishState(page) {
+  const dom = await page.evaluate(() => {
+    const text = (document.body?.innerText || '').toLowerCase();
+    const hasPublished =
+      text.includes('video published') ||
+      text.includes('your video is uploaded') ||
+      text.includes('published on youtube');
+    const hasProcessing =
+      text.includes('video processing') ||
+      text.includes('finish processing before your video is public') ||
+      text.includes('checks complete') ||
+      text.includes('no issues found') ||
+      text.includes('uploaded and is being processed');
+    const hasHardError =
+      text.includes('copyright claim') ||
+      text.includes('blocked in') ||
+      text.includes('couldn\'t publish') ||
+      text.includes('upload failed');
+
+    return {
+      hasPublished,
+      hasProcessing,
+      hasHardError,
+      summary: text.slice(0, 1200),
+    };
+  }).catch(() => ({ hasPublished: false, hasProcessing: false, hasHardError: false, summary: '' }));
+
+  if (dom.hasPublished || dom.hasProcessing) {
+    return {
+      successLike: true,
+      reason: dom.hasPublished
+        ? 'YouTube shows a published confirmation.'
+        : 'YouTube shows processing/checks complete, which means upload finished and processing continues server-side.',
+    };
+  }
+
+  if (dom.hasHardError) {
+    return {
+      successLike: false,
+      needsHuman: true,
+      reason: 'YouTube shows a blocking publish/upload error on screen.',
+    };
+  }
+
+  let aiState = null;
+  try {
+    aiState = await analyzePage(page, 'YouTube publish stage. Decide if the page is success/processing or a true blocker that requires human help.');
+  } catch {
+    aiState = null;
+  }
+
+  const state = String(aiState?.state || '').toLowerCase();
+  const description = String(aiState?.description || '').trim();
+  const successStates = new Set(['success', 'processing', 'uploading']);
+
+  if (successStates.has(state)) {
+    return {
+      successLike: true,
+      reason: description || 'AI recognized this as a successful/processing final state.',
+    };
+  }
+
+  return {
+    successLike: false,
+    needsHuman: Boolean(aiState?.needs_human),
+    reason: description || 'No reliable final confirmation detected yet.',
+  };
+}
+
 async function selectAudienceNotMadeForKids(page) {
   const clicked = await smartClick(page, [
     'ytcp-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
@@ -254,7 +385,14 @@ async function waitForPublishConfirmation(page, timeoutMs = 15000) {
   while (Date.now() - started < timeoutMs) {
     const published = await page.evaluate(() => {
       const text = (document.body?.innerText || '').toLowerCase();
-      return text.includes('video published') || text.includes('checks complete') || text.includes('your video is uploaded');
+      return (
+        text.includes('video published') ||
+        text.includes('checks complete') ||
+        text.includes('your video is uploaded') ||
+        text.includes('video processing') ||
+        text.includes('finish processing before your video is public') ||
+        text.includes('no issues found')
+      );
     }).catch(() => false);
 
     if (published) return true;
@@ -302,6 +440,7 @@ async function requestHumanObstacleHelp(page, credentials, reason) {
     platform: 'YouTube',
     customMessage: message,
     screenshotBuffer,
+    screenshotCaption: '📸 <b>YouTube obstacle screen</b> — review this screen and reply with your instruction',
     backend: credentials.backend,
   });
 
@@ -531,6 +670,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
     // ===== PHASE 2: OPEN UPLOAD DIALOG =====
     console.log('[YouTube] Opening upload dialog...');
+    let cachedVideoUrl = '';
 
     let fileInput = await ensureStudioUploadPage(page);
 
@@ -618,6 +758,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     await fileInput.setInputFiles(videoPath);
     console.log('[YouTube] Video file set, waiting for processing...');
     await page.waitForTimeout(8000);
+    cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
 
     // ===== PHASE 4: FILL TITLE & DESCRIPTION =====
     if (metadata?.title) {
@@ -683,6 +824,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       if (next.clicked) {
         nextClicks += 1;
         stuckRounds = 0;
+        cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
         await page.waitForTimeout(2200);
         continue;
       }
@@ -731,6 +873,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       }
     });
     await page.waitForTimeout(1500);
+    cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
 
     // ===== PHASE 7: PUBLISH =====
     console.log('[YouTube] Publishing...');
@@ -742,15 +885,25 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       if (btn) btn.click();
     });
     await page.waitForTimeout(6000);
+    cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
 
     let publishConfirmed = await waitForPublishConfirmation(page, 12000);
     if (!publishConfirmed) {
-      await requestHumanObstacleHelp(
-        page,
-        credentials,
-        'Publish confirmation was not detected. If YouTube is asking for any final option, complete it and reply APPROVED.'
-      );
-      publishConfirmed = await waitForPublishConfirmation(page, 15000);
+      const postPublish = await assessYouTubePostPublishState(page);
+      if (postPublish.successLike) {
+        publishConfirmed = true;
+      } else {
+        await requestHumanObstacleHelp(
+          page,
+          credentials,
+          `Publish confirmation was not clearly detected. ${postPublish.reason}\nIf YouTube still needs a final action, complete it and reply APPROVED.`
+        );
+        publishConfirmed = await waitForPublishConfirmation(page, 15000);
+        if (!publishConfirmed) {
+          const secondCheck = await assessYouTubePostPublishState(page);
+          publishConfirmed = secondCheck.successLike;
+        }
+      }
     }
 
     if (!publishConfirmed) {
@@ -758,7 +911,10 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     }
 
     // ===== PHASE 8: EXTRACT VIDEO URL =====
-    const videoUrl = await extractPublishedVideoUrl(page);
+    const videoUrl =
+      await extractPublishedVideoUrl(page)
+      || cachedVideoUrl
+      || await captureVideoUrlCandidate(page, '');
 
     console.log(`[YouTube] Upload complete! URL: ${videoUrl || 'not captured'}`);
     await context.close();
