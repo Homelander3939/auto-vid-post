@@ -429,14 +429,27 @@ export default function CampaignScheduler() {
                     <span className="capitalize">{entry.platforms.join(', ')}</span>
                   </div>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => removeEntry(idx)}
-                  className="h-7 px-1.5 text-muted-foreground hover:text-destructive shrink-0"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-1.5 text-muted-foreground hover:text-destructive shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Remove from campaign?</AlertDialogTitle>
+                      <AlertDialogDescription>This entry will be removed from the campaign queue.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => removeEntry(idx)} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Remove</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               </div>
             ))}
             <Button onClick={saveAll} disabled={saving} className="w-full gap-2 mt-2">
