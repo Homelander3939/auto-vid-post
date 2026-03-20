@@ -1,81 +1,52 @@
 
-Goal: make local mode the primary autonomous uploader (no platform API credentials), keep Telegram/AI as helper only, and make cross-platform browser automation reliable.
 
-What I found (root cause)
-- Your screenshot error is real and reproducible from code: `process-uploads` still has a local-mode branch that tries YouTube/TikTok/Instagram API uploads and throws “API credentials not configured”.
-- This function is also invoked every minute by backend cron, so even in local mode it keeps trying the wrong path.
-- Dashboard always invokes `process-uploads` after queuing, regardless of mode.
-- Local status indicator checks `http://localhost:3001/health`, but the server exposes `/api/health` (so UI can show local server as offline even when it’s running).
-- Do I know what the issue is? Yes.
+## Problem Analysis
 
-Implementation plan
+1. **Campaign "Saving..." hangs**: The `CampaignScheduler.saveAll()` uploads the video file to storage first (`uploadVideoFile`), which can be slow for large files. But the real issue is that after saving to `scheduled_uploads`, nothing triggers immediate processing — scheduled uploads only run when their `scheduled_at` time passes and the local server's cron picks them up. The user expected them to appear in the Upload Queue immediately, but they go to `scheduled_uploads` table (separate from `upload_jobs`).
 
-1) Enforce strict mode separation (local never uses API uploader path)
-- Update `supabase/functions/process-uploads/index.ts`:
-  - If `upload_mode === 'local'`, return early with a clear no-op result (do not process pending jobs, do not call API upload helpers).
-  - Keep cloud processing only when `upload_mode === 'cloud'`.
-  - Remove/retire misleading API-credential upload code paths and messages for local flow.
-- Result: no more “YouTube API credentials” failures when local mode is selected, even with cron active.
+2. **Schedule page is disconnected**: The `/schedule` page only configures a global recurring cron schedule (frequency/platforms). It has no way to plan individual scheduled uploads with folder paths, duration controls, or specific timing. The `CampaignScheduler` component (which does individual scheduling) lives only in the Dashboard's "Campaign" tab.
 
-2) Trigger the correct executor from UI
-- Update `src/pages/Dashboard.tsx`:
-  - Read settings before triggering processing.
-  - Cloud mode: invoke backend cloud processor.
-  - Local mode: call local server endpoint (`/api/process-pending`) to start immediate local processing (best-effort; fallback to cron polling).
-- Update local server endpoint behavior in `server/index.js`:
-  - Make `/api/process-pending` non-blocking (start processing and return quickly).
-  - Prevent duplicate processing via atomic claim (only process jobs still `pending` at claim time).
+3. **Missing duration controls**: No way to set how long a recurring schedule runs (X days/hours/weeks). The cron just runs forever once enabled.
 
-3) Prevent accidental platform selection mistakes
-- Update Dashboard + Campaign scheduler platform selectors:
-  - Pre-compute “ready platforms” = enabled + credentials present.
-  - Disable or auto-unselect platforms not ready, with explicit UI hint.
-  - Block queue/schedule action when selected platform set contains unready entries.
-- Keep server-side validation as final guardrail (authoritative).
+## Plan
 
-4) Fix scheduled folder uploads to work as intended in local mode
-- Keep backward compatibility with current format (`[folder] <path>` in `video_file_name`).
-- Update `server/index.js` scheduled flow:
-  - Detect folder-source entries.
-  - At execution time, scan that folder for latest video + optional `.txt` metadata.
-  - Create upload job with resolved file/metadata and chosen platforms.
-  - If nothing found, mark scheduled row error with clear reason.
-- This delivers your requested behavior: planned uploads use chosen local folder files automatically.
+### 1. Fix Campaign Scheduler — ensure jobs appear in Upload Queue
 
-5) Make local browser agent smarter across all platforms
-- Refactor `server/uploaders/*` + `server/uploaders/smart-agent.js` into deterministic-first playbooks (YouTube/TikTok/Instagram), with AI/DOM fallback only when signals are ambiguous.
-- Add robust stuck-handling:
-  - state confirmation after each action,
-  - bounded retries with alternative selectors/actions,
-  - direct fallback navigation when upload entry points are not found.
-- Keep session persistence and manual first-login support, but improve autonomous continuation after login.
+- When a campaign entry's `scheduled_at` is in the past or within 1 minute, create the `upload_job` immediately (same as single upload) instead of only saving to `scheduled_uploads`.
+- For future-dated entries, save to `scheduled_uploads` as now — the local server cron already converts them to `upload_jobs` when due.
+- After saving, trigger local server `/api/process-pending` (same as single upload does) so immediate jobs start right away.
+- Add error handling and timeout feedback so "Saving..." doesn't hang forever.
 
-6) Telegram behavior: only obstacle + final result, with visual evidence
-- Keep notification policy strict:
-  - send only when human intervention is required (verification/blocker),
-  - and final summary (success/failed/partial).
-- Add obstacle screenshots:
-  - capture screenshot on verification/blocker,
-  - upload to storage,
-  - send via Telegram photo/link immediately with concise instruction.
-- No noisy “every step” messages.
+### 2. Merge Schedule page with Campaign Scheduler
 
-7) Status correctness hardening
-- Normalize status lifecycle across local/cloud workers.
-- Add DB update error checks everywhere (don’t ignore update failures).
-- Update `upload_jobs` status constraint via migration to match used statuses (include `uploading`/`partial` if retained), or unify code to a smaller allowed set.
-- Add stale-job reconciliation to local worker too (not only cloud function), so jobs don’t stay misleadingly active.
+- Restructure the Schedule page into two sections:
+  - **Recurring Schedule**: the existing frequency/platform/cron config (keep as-is).
+  - **Scheduled Uploads**: embed the `CampaignScheduler` component here so users can plan individual uploads with specific dates from this page too.
+- Add duration controls to the recurring schedule: "Run for X days/hours/weeks" with an optional end date, stored in `schedule_config`. The local server cron checks this and stops processing after the end date.
 
-Technical details (files to touch)
-- Backend function: `supabase/functions/process-uploads/index.ts`
-- Local worker: `server/index.js`, `server/uploaders/youtube.js`, `server/uploaders/tiktok.js`, `server/uploaders/instagram.js`, `server/uploaders/smart-agent.js`, `server/uploaders/approval.js`, `server/telegram.js`
-- Frontend: `src/pages/Dashboard.tsx`, `src/components/CampaignScheduler.tsx`, `src/components/AppLayout.tsx` (health endpoint fix)
-- Storage/types layer (if needed for local trigger helpers): `src/lib/storage.ts`
-- Migration(s): upload status constraint alignment (and only if needed for chosen status model)
+### 3. Add folder path support to Schedule page recurring cron
 
-Validation checklist after implementation
-- Local mode + YouTube credentials only: queue upload → no API credential error, only YouTube runs.
-- Local mode + scheduled folder entry: due time resolves actual local file and uploads.
-- Obstacle case (2FA): Telegram receives intervention request + screenshot; no false obstacle spam.
-- Completion case: Telegram gets exactly one final summary with per-platform outcomes.
-- Cloud mode still works independently and does not conflict with local worker.
+- Add a folder path input to the recurring schedule config (stored in `schedule_config` table).
+- When the cron fires, the local server reads the folder path from schedule config, scans for latest video + txt, creates an upload job automatically.
+- Migration: add `folder_path` and `end_at` columns to `schedule_config`.
+
+### 4. Local server — handle both scheduled_uploads and recurring cron with folder
+
+- `processScheduledUploads()`: already works, no major changes needed.
+- Add `processRecurringSchedule()`: reads `schedule_config`, checks if enabled + not past end date, scans folder, creates job, processes it.
+- Both run in the existing 1-minute cron loop.
+
+### 5. Campaign saveAll reliability
+
+- Add a timeout wrapper around `uploadVideoFile` with user feedback.
+- Show progress state ("Uploading video 1/3...", "Creating schedule...") instead of just "Saving...".
+- If video upload fails, show clear error and don't hang.
+
+### Files to modify
+
+- `src/pages/Schedule.tsx` — add CampaignScheduler embed + duration controls + folder path
+- `src/components/CampaignScheduler.tsx` — fix immediate-job creation for past/near-future entries, add progress feedback
+- `src/lib/storage.ts` — add `folder_path` and `end_at` to ScheduleConfig, update save/get
+- `server/index.js` — add `processRecurringSchedule()` using folder from schedule_config
+- Migration: add `folder_path` (text) and `end_at` (timestamptz) columns to `schedule_config`
+
