@@ -56,6 +56,99 @@ ${upcomingScheduled.length > 0 ? upcomingScheduled.map(formatScheduled).join('\n
 ===`;
 }
 
+/** Download a Telegram file by file_id → returns a data URL or null */
+async function downloadTelegramFile(
+  fileId: string,
+  lovableKey: string,
+  telegramKey: string,
+): Promise<{ url: string; mimeType: string } | null> {
+  try {
+    // Step 1: getFile to get file_path
+    const fileResp = await fetch(`${TELEGRAM_GATEWAY}/getFile`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${lovableKey}`,
+        'X-Connection-Api-Key': telegramKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ file_id: fileId }),
+    });
+    if (!fileResp.ok) return null;
+    const fileData = await fileResp.json();
+    const filePath = fileData.result?.file_path;
+    if (!filePath) return null;
+
+    // Step 2: Download via gateway /file/ endpoint
+    const dlResp = await fetch(`${TELEGRAM_GATEWAY}/file/${filePath}`, {
+      headers: {
+        'Authorization': `Bearer ${lovableKey}`,
+        'X-Connection-Api-Key': telegramKey,
+      },
+    });
+    if (!dlResp.ok) return null;
+
+    const contentType = dlResp.headers.get('content-type') || 'application/octet-stream';
+    const arrayBuf = await dlResp.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuf);
+    
+    // Convert to base64 data URL
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const b64 = btoa(binary);
+    const mimeType = contentType.split(';')[0].trim();
+    return { url: `data:${mimeType};base64,${b64}`, mimeType };
+  } catch (e) {
+    console.error('File download failed:', e);
+    return null;
+  }
+}
+
+/** Extract message content from a Telegram update, handling text, photos, voice, docs */
+async function extractMessageContent(
+  message: any,
+  lovableKey: string,
+  telegramKey: string,
+): Promise<{ text: string; images: { url: string }[]; hasMedia: boolean }> {
+  const text = message.text || message.caption || '';
+  const images: { url: string }[] = [];
+  let hasMedia = false;
+
+  // Handle photos (array of sizes, pick largest)
+  if (message.photo && message.photo.length > 0) {
+    hasMedia = true;
+    const largest = message.photo[message.photo.length - 1];
+    const file = await downloadTelegramFile(largest.file_id, lovableKey, telegramKey);
+    if (file && file.mimeType.startsWith('image/')) {
+      images.push({ url: file.url });
+    }
+  }
+
+  // Handle document (could be image or other file)
+  if (message.document) {
+    hasMedia = true;
+    const doc = message.document;
+    if (doc.mime_type?.startsWith('image/')) {
+      const file = await downloadTelegramFile(doc.file_id, lovableKey, telegramKey);
+      if (file) images.push({ url: file.url });
+    }
+  }
+
+  // Handle voice/audio
+  if (message.voice || message.audio) {
+    hasMedia = true;
+    // We can't transcribe here, but we note it
+  }
+
+  // Handle sticker
+  if (message.sticker) {
+    hasMedia = true;
+  }
+
+  return { text, images, hasMedia };
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -115,9 +208,29 @@ serve(async (req) => {
     if (updates.length === 0) continue;
 
     for (const update of updates) {
-      if (!update.message?.text) continue;
-      const chatId = update.message.chat.id;
-      const userText = update.message.text;
+      const message = update.message;
+      if (!message) continue;
+
+      const chatId = message.chat.id;
+
+      // Extract content (text, photos, voice, docs)
+      const { text: userText, images, hasMedia } = await extractMessageContent(
+        message, LOVABLE_API_KEY, TELEGRAM_API_KEY
+      );
+
+      // Skip if truly empty (no text, no media)
+      if (!userText && !hasMedia) continue;
+
+      const displayText = userText || (images.length > 0 ? '📷 [Photo]' : hasMedia ? '📎 [File]' : '');
+
+      // Store user message
+      await supabase.from('telegram_messages').upsert({
+        update_id: update.update_id,
+        chat_id: chatId,
+        text: displayText,
+        is_bot: false,
+        raw_update: update,
+      }, { onConflict: 'update_id' });
 
       // Get conversation history
       const { data: history } = await supabase
@@ -129,24 +242,35 @@ serve(async (req) => {
 
       const contextMessages = (history || []).reverse().map((m: any) => ({
         role: m.is_bot ? 'assistant' : 'user',
-        content: m.text,
+        content: m.text || '',
       }));
 
-      contextMessages.push({ role: 'user', content: userText });
+      // Build the current message for AI (with image support)
+      const currentAiMsg: any = {
+        role: 'user',
+        content: userText || (images.length > 0 ? 'What do you see in this image?' : 'I sent a file.'),
+      };
 
-      // Store user message
-      await supabase.from('telegram_messages').upsert({
-        update_id: update.update_id,
-        chat_id: chatId,
-        text: userText,
-        is_bot: false,
-        raw_update: update,
-      }, { onConflict: 'update_id' });
+      if (images.length > 0) {
+        // Use multimodal format
+        const contentParts: any[] = [];
+        if (userText) contentParts.push({ type: 'text', text: userText });
+        else contentParts.push({ type: 'text', text: 'What do you see in this image? Describe it.' });
+        for (const img of images) {
+          contentParts.push({ type: 'image_url', image_url: { url: img.url } });
+        }
+        currentAiMsg.content = contentParts;
+      }
+
+      contextMessages.push(currentAiMsg);
 
       // Get live app context for AI
       const appContext = await getAppContext(supabase);
 
-      // Call AI with app context
+      // Pick model: use vision model if images present
+      const model = images.length > 0 ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
+
+      // Call AI
       let aiReply = "Sorry, I couldn't process your message right now.";
       try {
         const aiResp = await fetch(AI_GATEWAY, {
@@ -156,7 +280,7 @@ serve(async (req) => {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'google/gemini-3-flash-preview',
+            model,
             messages: [
               {
                 role: 'system',
@@ -166,6 +290,7 @@ ${appContext}
 
 You help users manage video uploads to YouTube, TikTok, and Instagram. Be concise for Telegram format.
 When users ask about queued jobs, scheduled uploads, or settings — USE THE LIVE DATA ABOVE to answer accurately.
+When users send images, analyze them and describe what you see.
 NEVER say you don't have access to the data. You DO have access.
 Keep responses short and formatted for Telegram (use simple markdown).`,
               },
@@ -177,6 +302,8 @@ Keep responses short and formatted for Telegram (use simple markdown).`,
         if (aiResp.ok) {
           const aiData = await aiResp.json();
           aiReply = aiData.choices?.[0]?.message?.content || aiReply;
+        } else {
+          console.error('AI response error:', aiResp.status, await aiResp.text());
         }
       } catch (e) {
         console.error('AI call failed:', e);
