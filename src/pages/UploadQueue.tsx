@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getQueue, getSettings, getScheduledUploads, deleteScheduledUpload, retryJob, deleteJob, clearQueue, stopJob, getVideoUrl, type UploadJob, type PlatformResult, type ScheduledUpload } from '@/lib/storage';
+import { getQueue, getSettings, getScheduledUploads, getSchedules, deleteScheduledUpload, retryJob, deleteJob, clearQueue, stopJob, getVideoUrl, type UploadJob, type PlatformResult, type ScheduledUpload, type ScheduleConfig } from '@/lib/storage';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
