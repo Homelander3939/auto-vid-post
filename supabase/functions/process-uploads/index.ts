@@ -214,10 +214,22 @@ serve(async (req) => {
             });
             clearTimeout(fetchTimeout);
 
-            const cloudData = await cloudResp.json();
-            if (!cloudData.success) {
-              throw new Error(cloudData.error || 'Cloud browser upload failed');
+            const cloudRaw = await cloudResp.text();
+            if (!cloudRaw) {
+              throw new Error(`Cloud browser upload returned empty response [${cloudResp.status}]`);
             }
+
+            let cloudData: any;
+            try {
+              cloudData = JSON.parse(cloudRaw);
+            } catch {
+              throw new Error(`Cloud browser upload returned invalid JSON [${cloudResp.status}]: ${cloudRaw.slice(0, 220)}`);
+            }
+
+            if (!cloudResp.ok || !cloudData.success) {
+              throw new Error(cloudData?.error || `Cloud browser upload failed [${cloudResp.status}]`);
+            }
+
             uploadUrl = cloudData.url || '';
           } catch (fetchErr: any) {
             clearTimeout(fetchTimeout);
