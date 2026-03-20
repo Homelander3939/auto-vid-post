@@ -603,55 +603,53 @@ async function logStep(supabase: any, jobId: string, step: number, action: Agent
 
 function buildTaskPrompt(platform: string, params: AutomationParams): string {
   const cred = params.email && params.password
-    ? `\n\nCredentials:\n- Email: ${params.email}\n- Password: ${params.password}\n\nIMPORTANT: Use focus_and_type with CSS selector to enter credentials. For Google login:\n1. focus_and_type selector='input[type="email"]' text='${params.email}'\n2. click_element selector='#identifierNext' OR press_key 'Enter'\n3. Wait 3s for password page\n4. focus_and_type selector='input[type="password"]' text='${params.password}'\n5. click_element selector='#passwordNext' OR press_key 'Enter'`
+    ? `\n\nCredentials:\n- Email: ${params.email}\n- Password: ${params.password}\n\nFor Google login: focus_and_type on input[type="email"], then click #identifierNext. Wait for password page. focus_and_type on input[type="password"], then click #passwordNext. If any verification challenge appears, return need_verification immediately.`
     : '\n\nNo credentials provided. If login required, return need_verification.';
 
   const meta = `\n\nVideo metadata:\n- Title: ${params.title}\n- Description: ${params.description}\n- Tags: ${params.tags.join(', ')}`;
 
   switch (platform) {
     case 'youtube':
-      return `Upload a video to YouTube Studio (studio.youtube.com).
+      return `Upload a video to YouTube Studio. You MUST complete ALL steps — do NOT stop or wait after reaching the dashboard.
 
-STEP-BY-STEP PLAN:
-1. If on Google login page → enter email via focus_and_type on input[type="email"], then click #identifierNext
-2. Wait for password page → enter password via focus_and_type on input[type="password"], then click #passwordNext  
-3. If 2FA/verification appears → return need_verification
-4. Once on YouTube Studio → click the Create button (look for button with "Upload" or camera+ icon, usually top-right)
-5. Click "Upload videos" from dropdown
-6. When file input appears → return upload_file
-7. After file loads → fill title (clear existing text first, use the textbox element)
-8. Fill description
-9. Click Next 3 times to go through wizard
-10. Select "Public" visibility
-11. Click "Publish" / "Save" / "Done"
-12. Extract the video URL and return done${cred}${meta}`;
+STEP-BY-STEP PLAN (follow precisely, DO NOT SKIP ANY STEP):
+1. If on Google login → enter email, click Next, wait 3s, enter password, click Next
+2. If any verification/2FA → return need_verification
+3. Once on YouTube Studio dashboard → IMMEDIATELY click Create button. Use run_js: document.querySelector('#create-icon')?.click() — if that returns null try: var btns = [...document.querySelectorAll('button, ytcp-button, [role="button"]')]; var cb = btns.find(b => (b.textContent||'').includes('Create') || (b.getAttribute('aria-label')||'').includes('Create') || (b.id||'').includes('create')); if(cb) cb.click();
+4. From dropdown → click "Upload videos". Use run_js: setTimeout(()=>{ var items = [...document.querySelectorAll('tp-yt-paper-item, [role="menuitem"], #text-item-0')]; var ui = items.find(i => (i.textContent||'').includes('Upload')); if(ui) ui.click(); }, 500);
+5. When upload dialog appears with file input → return upload_file
+6. Wait 8s for file processing, then fill title using run_js: var tb = document.querySelector('#title-textarea #textbox') || document.querySelectorAll('#textbox')[0]; if(tb){tb.focus();tb.click();document.execCommand('selectAll');document.execCommand('insertText',false,'${params.title}');}
+7. Fill description similarly using the second #textbox
+8. Click Next button 3 times: run_js: document.querySelector('#next-button')?.click() — with 2s waits between
+9. Select Public visibility: run_js: document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]')?.click()
+10. Click Done/Publish: run_js: document.querySelector('#done-button')?.click()
+11. Wait 5s, extract video URL, return done
+
+CRITICAL: When you see YouTube Studio dashboard with the channel info, the VERY NEXT action must be clicking the Create button. Do NOT return wait or observe — ACT.${cred}${meta}`;
 
     case 'tiktok':
-      return `Upload a video to TikTok.
+      return `Upload a video to TikTok. Complete ALL steps without stopping.
 
-STEP-BY-STEP PLAN:
-1. Navigate to tiktok.com/creator#/upload
-2. If login needed → enter credentials
-3. If verification → return need_verification
-4. When file upload area visible → return upload_file
-5. Fill caption with title + hashtags from tags
-6. Click Post
-7. Return done with URL${cred}${meta}`;
+STEPS:
+1. If login needed → enter credentials
+2. If verification → return need_verification
+3. When upload area visible → return upload_file
+4. Fill caption with title + hashtags
+5. Click Post
+6. Return done with URL${cred}${meta}`;
 
     case 'instagram':
-      return `Upload a video as a Reel on Instagram.
+      return `Upload a Reel on Instagram. Complete ALL steps without stopping.
 
-STEP-BY-STEP PLAN:
-1. Navigate to instagram.com
-2. If login needed → focus_and_type on input[name="username"] and input[name="password"]
-3. If verification → return need_verification
-4. Dismiss any popups (Not Now buttons)
-5. Click Create/New post (+ icon)
-6. When file input visible → return upload_file
-7. Navigate through crop/filter → click Next
-8. Fill caption
-9. Click Share
-10. Return done${cred}${meta}`;
+STEPS:
+1. If login needed → fill username/password, click Log In
+2. If verification → return need_verification
+3. Dismiss popups ("Not Now")
+4. Click New post (+) icon
+5. When file input visible → return upload_file
+6. Navigate through crop/filter → Next
+7. Fill caption
+8. Click Share → return done${cred}${meta}`;
 
     default:
       return `Upload a video to ${platform}.${cred}${meta}`;
