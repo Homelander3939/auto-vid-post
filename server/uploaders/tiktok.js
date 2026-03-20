@@ -1,6 +1,7 @@
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
 
@@ -28,6 +29,10 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     // Check if login is needed
     const loginButton = await page.$('[data-e2e="top-login-button"], button:has-text("Log in")');
     if (loginButton) {
+      if (!credentials?.email || !credentials?.password) {
+        throw new Error('TikTok credentials missing in Settings. Add email and password first.');
+      }
+
       console.log('[TikTok] Needs login — opening login page');
       await loginButton.click();
       await page.waitForTimeout(2000);
@@ -41,6 +46,32 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       await page.fill('input[type="password"]', credentials.password);
       await page.click('button[type="submit"], button:has-text("Log in")');
       await page.waitForTimeout(8000);
+
+      const needsVerification = await page.evaluate(() => {
+        const text = (document.body?.innerText || '').toLowerCase();
+        return (
+          window.location.href.toLowerCase().includes('login') ||
+          text.includes('verification code') ||
+          text.includes('security check') ||
+          text.includes('verify')
+        );
+      });
+
+      if (needsVerification) {
+        const approval = await requestTelegramApproval({
+          telegram: credentials.telegram,
+          platform: 'TikTok',
+        });
+
+        if (!approval) {
+          throw new Error('TikTok verification required, but no Telegram approval/code was received in time.');
+        }
+
+        if (approval.code) {
+          await tryFillVerificationCode(page, approval.code);
+          await page.waitForTimeout(5000);
+        }
+      }
 
       // Navigate to upload page
       await page.goto('https://www.tiktok.com/creator#/upload?scene=creator_center', {
