@@ -6,6 +6,156 @@ const AI_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
 const MAX_RUNTIME_MS = 20_000;
 const MIN_REMAINING_MS = 3_000;
 
+/* ── Tool definitions (same as ai-chat) ─────────────── */
+const tools = [
+  {
+    type: 'function',
+    function: {
+      name: 'create_upload_job',
+      description: 'Create a new video upload job in the queue.',
+      parameters: {
+        type: 'object',
+        properties: {
+          video_file_name: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          video_storage_path: { type: 'string' },
+        },
+        required: ['video_file_name', 'title', 'target_platforms'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'schedule_upload',
+      description: 'Schedule a video upload for a specific date/time.',
+      parameters: {
+        type: 'object',
+        properties: {
+          video_file_name: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          scheduled_at: { type: 'string' },
+          video_storage_path: { type: 'string' },
+        },
+        required: ['video_file_name', 'title', 'target_platforms', 'scheduled_at'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_cron_schedule',
+      description: 'Update the automatic upload cron schedule.',
+      parameters: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean' },
+          cron_expression: { type: 'string' },
+          platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_upload_job',
+      description: 'Delete/cancel an upload job by ID.',
+      parameters: { type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'retry_failed_job',
+      description: 'Retry a failed upload job.',
+      parameters: { type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'] },
+    },
+  },
+];
+
+async function executeTool(supabase: any, name: string, args: any): Promise<string> {
+  switch (name) {
+    case 'create_upload_job': {
+      const { data, error } = await supabase.from('upload_jobs').insert({
+        video_file_name: args.video_file_name, title: args.title || '', description: args.description || '',
+        tags: args.tags || [], target_platforms: args.target_platforms || [], status: 'pending',
+        video_storage_path: args.video_storage_path || null,
+      }).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Job created: "${data.title}" → ${data.target_platforms.join(', ')} [pending]`;
+    }
+    case 'schedule_upload': {
+      const { data, error } = await supabase.from('scheduled_uploads').insert({
+        video_file_name: args.video_file_name, title: args.title || '', description: args.description || '',
+        tags: args.tags || [], target_platforms: args.target_platforms || [], scheduled_at: args.scheduled_at,
+        status: 'scheduled', video_storage_path: args.video_storage_path || null,
+      }).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Scheduled: "${data.title}" → ${data.target_platforms.join(', ')} at ${new Date(data.scheduled_at).toLocaleString()}`;
+    }
+    case 'update_cron_schedule': {
+      const update: any = {};
+      if (args.enabled !== undefined) update.enabled = args.enabled;
+      if (args.cron_expression) update.cron_expression = args.cron_expression;
+      if (args.platforms) update.platforms = args.platforms;
+      const { data, error } = await supabase.from('schedule_config').update(update).eq('id', 1).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Cron updated: ${data.enabled ? 'ON' : 'OFF'} | ${data.cron_expression} | ${data.platforms.join(', ')}`;
+    }
+    case 'delete_upload_job': {
+      const { error } = await supabase.from('upload_jobs').delete().eq('id', args.job_id);
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Job ${args.job_id} deleted.`;
+    }
+    case 'retry_failed_job': {
+      const { data, error } = await supabase.from('upload_jobs')
+        .update({ status: 'pending', completed_at: null, platform_results: [] })
+        .eq('id', args.job_id).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Job "${data.title || data.video_file_name}" reset to pending.`;
+    }
+    default: return `Unknown tool: ${name}`;
+  }
+}
+
+async function callAIWithTools(apiKey: string, model: string, messages: any[], supabase: any): Promise<string> {
+  const fullMessages = [...messages];
+  for (let round = 0; round < 3; round++) {
+    const resp = await fetch(AI_GATEWAY, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: fullMessages, tools, tool_choice: 'auto' }),
+    });
+    if (!resp.ok) {
+      console.error('AI error:', resp.status, await resp.text());
+      return resp.status === 429 ? 'Rate limit exceeded.' : resp.status === 402 ? 'AI credits exhausted.' : 'AI error.';
+    }
+    const data = await resp.json();
+    const choice = data.choices?.[0];
+    if (!choice) return "Sorry, couldn't process that.";
+    if (choice.finish_reason === 'stop' || !choice.message?.tool_calls?.length) {
+      return choice.message?.content || 'Done.';
+    }
+    fullMessages.push(choice.message);
+    for (const tc of choice.message.tool_calls) {
+      let args: any;
+      try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
+      console.log(`Tool: ${tc.function.name}`, args);
+      const result = await executeTool(supabase, tc.function.name, args);
+      fullMessages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+    }
+  }
+  return 'Actions executed.';
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
