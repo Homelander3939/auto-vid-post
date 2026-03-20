@@ -335,6 +335,17 @@ serve(async (req) => {
 
       contextMessages.push(currentAiMsg);
 
+      // Send "typing..." indicator to Telegram
+      void fetch(`${TELEGRAM_GATEWAY}/sendChatAction`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
+          'X-Connection-Api-Key': TELEGRAM_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+      });
+
       const appContext = await getAppContext(supabase);
       const model = images.length > 0 ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
 
