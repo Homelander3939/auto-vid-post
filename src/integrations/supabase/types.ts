@@ -78,6 +78,8 @@ export type Database = {
         Row: {
           cron_expression: string
           enabled: boolean
+          end_at: string | null
+          folder_path: string
           id: number
           platforms: string[]
           updated_at: string
@@ -85,6 +87,8 @@ export type Database = {
         Insert: {
           cron_expression?: string
           enabled?: boolean
+          end_at?: string | null
+          folder_path?: string
           id?: number
           platforms?: string[]
           updated_at?: string
@@ -92,6 +96,8 @@ export type Database = {
         Update: {
           cron_expression?: string
           enabled?: boolean
+          end_at?: string | null
+          folder_path?: string
           id?: number
           platforms?: string[]
           updated_at?: string
