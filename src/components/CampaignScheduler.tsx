@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createScheduledUpload,
@@ -7,6 +7,7 @@ import {
   parseTextContent,
   uploadVideoFile,
   getVideoUrl,
+  getSettings,
   type VideoMetadata,
   type ScheduledUpload,
 } from '@/lib/storage';
@@ -14,14 +15,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   FileVideo,
   FileText,
@@ -32,15 +28,18 @@ import {
   Clock,
   Video,
   Info,
+  FolderOpen,
+  X,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
 
 interface ScheduleEntry {
-  videoFile: File;
-  textContent: string;
-  textFileName: string;
-  metadata: VideoMetadata;
+  videoFile?: File;
+  folderPath?: string;
+  title: string;
+  description: string;
+  tags: string[];
   scheduledAt: string;
   platforms: string[];
 }
@@ -50,10 +49,28 @@ export default function CampaignScheduler() {
   const queryClient = useQueryClient();
 
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
-  const [currentEntry, setCurrentEntry] = useState<Partial<ScheduleEntry>>({});
   const [saving, setSaving] = useState(false);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
+
+  // Source mode: manual file upload or folder path (local only)
+  const [sourceMode, setSourceMode] = useState<'file' | 'folder'>('file');
+  const [uploadMode, setUploadMode] = useState<'local' | 'cloud'>('local');
+
+  // Current entry fields
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [folderPath, setFolderPath] = useState('');
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [tagsInput, setTagsInput] = useState('');
+  const [textFileName, setTextFileName] = useState<string | null>(null);
+  const [platforms, setPlatforms] = useState<string[]>(['youtube', 'tiktok', 'instagram']);
+  const [scheduledAt, setScheduledAt] = useState('');
+
+  // Load current upload mode
+  useEffect(() => {
+    getSettings().then((s) => setUploadMode(s.uploadMode));
+  }, []);
 
   const { data: scheduled = [] } = useQuery({
     queryKey: ['scheduled_uploads'],
@@ -64,7 +81,10 @@ export default function CampaignScheduler() {
   const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setCurrentEntry((prev) => ({ ...prev, videoFile: file }));
+    setVideoFile(file);
+    if (!title) {
+      setTitle(file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
+    }
   };
 
   const handleTextSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -73,46 +93,63 @@ export default function CampaignScheduler() {
     try {
       const text = await file.text();
       const parsed = parseTextContent(text);
-      setCurrentEntry((prev) => ({
-        ...prev,
-        textContent: text,
-        textFileName: file.name,
-        metadata: parsed,
-        platforms: prev.platforms || parsed.platforms,
-      }));
+      setTextFileName(file.name);
+      if (parsed.title) setTitle(parsed.title);
+      if (parsed.description) setDescription(parsed.description);
+      if (parsed.tags?.length) setTagsInput(parsed.tags.join(', '));
+      if (parsed.platforms?.length) setPlatforms(parsed.platforms);
+      toast({ title: `Imported from ${file.name}` });
     } catch {
       toast({ title: 'Could not read text file', variant: 'destructive' });
     }
   };
 
-  const togglePlatform = (p: string) => {
-    setCurrentEntry((prev) => {
-      const current = prev.platforms || ['youtube', 'tiktok', 'instagram'];
-      const next = current.includes(p)
-        ? current.filter((x) => x !== p)
-        : [...current, p];
-      return { ...prev, platforms: next };
-    });
+  const clearTextFile = () => {
+    setTextFileName(null);
+    if (textInputRef.current) textInputRef.current.value = '';
   };
 
+  const togglePlatform = (p: string) => {
+    setPlatforms((prev) =>
+      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]
+    );
+  };
+
+  const canAdd = sourceMode === 'folder'
+    ? folderPath.trim().length > 0 && scheduledAt
+    : !!videoFile && title.trim().length > 0 && scheduledAt;
+
   const addEntry = () => {
-    if (!currentEntry.videoFile || !currentEntry.metadata || !currentEntry.scheduledAt) {
-      toast({ title: 'Select video, text file, and schedule time', variant: 'destructive' });
+    if (!canAdd) {
+      toast({ title: 'Fill in required fields', variant: 'destructive' });
       return;
     }
+
+    const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean);
+
     const entry: ScheduleEntry = {
-      videoFile: currentEntry.videoFile,
-      textContent: currentEntry.textContent || '',
-      textFileName: currentEntry.textFileName || '',
-      metadata: currentEntry.metadata,
-      scheduledAt: currentEntry.scheduledAt,
-      platforms: currentEntry.platforms || ['youtube', 'tiktok', 'instagram'],
+      ...(sourceMode === 'file' ? { videoFile: videoFile! } : { folderPath: folderPath.trim() }),
+      title: title.trim() || (sourceMode === 'folder' ? '(auto from folder)' : ''),
+      description: description.trim(),
+      tags,
+      scheduledAt,
+      platforms,
     };
+
     setEntries((prev) => [...prev, entry]);
-    setCurrentEntry({});
+
+    // Reset form
+    setVideoFile(null);
+    setFolderPath('');
+    setTitle('');
+    setDescription('');
+    setTagsInput('');
+    setTextFileName(null);
+    setScheduledAt('');
+    setPlatforms(['youtube', 'tiktok', 'instagram']);
     if (videoInputRef.current) videoInputRef.current.value = '';
     if (textInputRef.current) textInputRef.current.value = '';
-    toast({ title: 'Entry added to campaign' });
+    toast({ title: 'Added to campaign' });
   };
 
   const removeEntry = (idx: number) => {
@@ -127,18 +164,35 @@ export default function CampaignScheduler() {
     setSaving(true);
     try {
       for (const entry of entries) {
-        const storagePath = await uploadVideoFile(entry.videoFile);
+        let storagePath: string | null = null;
+        let fileName = '';
+
+        if (entry.videoFile) {
+          storagePath = await uploadVideoFile(entry.videoFile);
+          fileName = entry.videoFile.name;
+        } else if (entry.folderPath) {
+          // Folder-based: no file upload now, local server will pick from folder
+          fileName = `[folder] ${entry.folderPath}`;
+        }
+
+        const metadata: VideoMetadata = {
+          title: entry.title,
+          description: entry.description,
+          tags: entry.tags,
+          platforms: entry.platforms,
+        };
+
         await createScheduledUpload(
-          entry.videoFile.name,
+          fileName,
           storagePath,
-          entry.metadata,
+          metadata,
           entry.platforms,
           entry.scheduledAt
         );
       }
       toast({
         title: `${entries.length} upload(s) scheduled!`,
-        description: 'The local server will process them at their scheduled times.',
+        description: 'They will be processed at their scheduled times.',
       });
       setEntries([]);
       queryClient.invalidateQueries({ queryKey: ['scheduled_uploads'] });
@@ -152,106 +206,163 @@ export default function CampaignScheduler() {
   const handleDeleteScheduled = async (id: string) => {
     await deleteScheduledUpload(id);
     queryClient.invalidateQueries({ queryKey: ['scheduled_uploads'] });
-    toast({ title: 'Scheduled upload removed' });
+    toast({ title: 'Removed' });
   };
 
-  const activePlatforms = currentEntry.platforms || ['youtube', 'tiktok', 'instagram'];
-
-  // Get minimum datetime (now + 5min)
   const minDateTime = new Date(Date.now() + 5 * 60000).toISOString().slice(0, 16);
 
   return (
-    <div className="space-y-8">
-      {/* Add new scheduled entry */}
+    <div className="space-y-6">
+      {/* New entry form */}
       <Card>
-        <CardHeader>
+        <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
             <CalendarClock className="w-4 h-4" />
             Schedule a New Upload
           </CardTitle>
           <CardDescription>
-            Select files, pick platforms and a date/time, then add to the campaign
+            Upload a file or point to a local folder for auto-pickup
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
-          {/* File selectors */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input
-              ref={videoInputRef}
-              type="file"
-              accept="video/*,.mp4,.mov,.avi,.mkv,.webm"
-              className="hidden"
-              onChange={handleVideoSelect}
-            />
-            <button
-              type="button"
-              onClick={() => videoInputRef.current?.click()}
-              className={`flex flex-col items-center gap-2 rounded-lg border-2 border-dashed p-5 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
-                currentEntry.videoFile ? 'border-primary/50 bg-primary/5' : 'border-border'
-              }`}
-            >
-              {currentEntry.videoFile ? (
-                <>
-                  <CheckCircle2 className="w-5 h-5 text-primary" />
-                  <span className="text-xs font-medium truncate max-w-full">{currentEntry.videoFile.name}</span>
-                </>
-              ) : (
-                <>
-                  <FileVideo className="w-5 h-5 text-muted-foreground" />
-                  <span className="text-xs font-medium">Select Video</span>
-                </>
-              )}
-            </button>
+          {/* Source mode toggle — folder only available in local mode */}
+          {uploadMode === 'local' && (
+            <Tabs value={sourceMode} onValueChange={(v) => setSourceMode(v as 'file' | 'folder')} className="w-full">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="file" className="gap-1.5 text-xs">
+                  <FileVideo className="w-3.5 h-3.5" />
+                  Upload File
+                </TabsTrigger>
+                <TabsTrigger value="folder" className="gap-1.5 text-xs">
+                  <FolderOpen className="w-3.5 h-3.5" />
+                  Local Folder
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          )}
 
-            <input
-              ref={textInputRef}
-              type="file"
-              accept=".txt,text/plain"
-              className="hidden"
-              onChange={handleTextSelect}
-            />
-            <button
-              type="button"
-              onClick={() => textInputRef.current?.click()}
-              className={`flex flex-col items-center gap-2 rounded-lg border-2 border-dashed p-5 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
-                currentEntry.textContent ? 'border-primary/50 bg-primary/5' : 'border-border'
-              }`}
-            >
-              {currentEntry.textContent ? (
-                <>
-                  <CheckCircle2 className="w-5 h-5 text-primary" />
-                  <span className="text-xs font-medium truncate max-w-full">{currentEntry.textFileName}</span>
-                </>
-              ) : (
-                <>
-                  <FileText className="w-5 h-5 text-muted-foreground" />
-                  <span className="text-xs font-medium">Select Text File</span>
-                </>
-              )}
-            </button>
-          </div>
+          {/* FILE mode */}
+          {sourceMode === 'file' && (
+            <>
+              <input
+                ref={videoInputRef}
+                type="file"
+                accept="video/*,.mp4,.mov,.avi,.mkv,.webm"
+                className="hidden"
+                onChange={handleVideoSelect}
+              />
+              <button
+                type="button"
+                onClick={() => videoInputRef.current?.click()}
+                className={`w-full flex flex-col items-center gap-2 rounded-lg border-2 border-dashed p-5 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
+                  videoFile ? 'border-primary/50 bg-primary/5' : 'border-border'
+                }`}
+              >
+                {videoFile ? (
+                  <>
+                    <CheckCircle2 className="w-5 h-5 text-primary" />
+                    <span className="text-xs font-medium truncate max-w-full">{videoFile.name}</span>
+                  </>
+                ) : (
+                  <>
+                    <FileVideo className="w-5 h-5 text-muted-foreground" />
+                    <span className="text-xs font-medium">Select Video</span>
+                  </>
+                )}
+              </button>
+            </>
+          )}
 
-          {/* Metadata preview */}
-          {currentEntry.metadata && (
-            <div className="rounded-lg bg-muted/50 p-3 space-y-1 text-sm">
-              <p><span className="font-medium">Title:</span> {currentEntry.metadata.title || '—'}</p>
-              <p><span className="font-medium">Description:</span> {currentEntry.metadata.description?.slice(0, 100) || '—'}</p>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {currentEntry.metadata.tags?.map((t) => (
-                  <Badge key={t} variant="secondary" className="text-xs">{t}</Badge>
-                ))}
-              </div>
+          {/* FOLDER mode */}
+          {sourceMode === 'folder' && (
+            <div className="space-y-2">
+              <Label className="text-xs">Folder Path</Label>
+              <Input
+                value={folderPath}
+                onChange={(e) => setFolderPath(e.target.value)}
+                placeholder="C:\Videos\uploads or /home/user/videos"
+                className="font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                System will auto-pick the latest video + matching .txt file from this folder at scheduled time.
+              </p>
             </div>
           )}
+
+          {/* Metadata fields */}
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="camp-title" className="text-xs">
+                Title {sourceMode === 'file' && <span className="text-destructive">*</span>}
+                {sourceMode === 'folder' && <span className="text-muted-foreground">(optional, auto from .txt)</span>}
+              </Label>
+              <Input
+                id="camp-title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={sourceMode === 'folder' ? 'Auto-filled from .txt if available' : 'Video title'}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="camp-desc" className="text-xs">Description</Label>
+              <Textarea
+                id="camp-desc"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Optional description…"
+                rows={2}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="camp-tags" className="text-xs">Tags</Label>
+              <Input
+                id="camp-tags"
+                value={tagsInput}
+                onChange={(e) => setTagsInput(e.target.value)}
+                placeholder="tag1, tag2, tag3"
+              />
+            </div>
+
+            {/* Optional txt import */}
+            <div className="flex items-center gap-2">
+              <input
+                ref={textInputRef}
+                type="file"
+                accept=".txt,text/plain"
+                className="hidden"
+                onChange={handleTextSelect}
+              />
+              {textFileName ? (
+                <Badge variant="secondary" className="gap-1 text-xs">
+                  <FileText className="w-3 h-3" />
+                  {textFileName}
+                  <button onClick={clearTextFile} className="ml-1 hover:text-destructive">
+                    <X className="w-3 h-3" />
+                  </button>
+                </Badge>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs gap-1.5 h-7"
+                  onClick={() => textInputRef.current?.click()}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Import from .txt
+                </Button>
+              )}
+            </div>
+          </div>
 
           {/* Platforms */}
           <div>
             <Label className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">Platforms</Label>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {['youtube', 'tiktok', 'instagram'].map((p) => (
                 <Button
                   key={p}
-                  variant={activePlatforms.includes(p) ? 'default' : 'outline'}
+                  variant={platforms.includes(p) ? 'default' : 'outline'}
                   size="sm"
                   onClick={() => togglePlatform(p)}
                   className="capitalize"
@@ -262,7 +373,7 @@ export default function CampaignScheduler() {
             </div>
           </div>
 
-          {/* Date/time picker */}
+          {/* Date/time */}
           <div>
             <Label className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">
               Scheduled Date & Time
@@ -270,18 +381,17 @@ export default function CampaignScheduler() {
             <Input
               type="datetime-local"
               min={minDateTime}
-              value={currentEntry.scheduledAt || ''}
-              onChange={(e) => setCurrentEntry((prev) => ({ ...prev, scheduledAt: e.target.value }))}
-              className="max-w-xs"
+              value={scheduledAt}
+              onChange={(e) => setScheduledAt(e.target.value)}
             />
           </div>
 
           {/* Add button */}
           <Button
             onClick={addEntry}
-            disabled={!currentEntry.videoFile || !currentEntry.metadata || !currentEntry.scheduledAt}
+            disabled={!canAdd}
             variant="outline"
-            className="gap-2"
+            className="w-full gap-2"
           >
             <Plus className="w-4 h-4" />
             Add to Campaign
@@ -289,27 +399,32 @@ export default function CampaignScheduler() {
         </CardContent>
       </Card>
 
-      {/* Pending campaign entries (not yet saved) */}
+      {/* Pending entries */}
       {entries.length > 0 && (
         <Card>
-          <CardHeader>
+          <CardHeader className="pb-3">
             <CardTitle className="text-base">
-              Campaign Queue ({entries.length} upload{entries.length > 1 ? 's' : ''})
+              Campaign Queue ({entries.length})
             </CardTitle>
-            <CardDescription>Review and save your scheduled uploads</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {entries.map((entry, idx) => (
-              <div
-                key={idx}
-                className="flex items-center justify-between rounded-lg border p-3"
-              >
+              <div key={idx} className="flex items-center justify-between rounded-lg border p-3 gap-2">
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium truncate">{entry.metadata.title || entry.videoFile.name}</p>
-                  <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-                    <Clock className="w-3 h-3" />
+                  <p className="text-sm font-medium truncate">
+                    {entry.folderPath ? (
+                      <span className="flex items-center gap-1">
+                        <FolderOpen className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                        {entry.folderPath}
+                      </span>
+                    ) : (
+                      entry.title || entry.videoFile?.name
+                    )}
+                  </p>
+                  <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground flex-wrap">
+                    <Clock className="w-3 h-3 shrink-0" />
                     <span>{format(new Date(entry.scheduledAt), 'PPp')}</span>
-                    <span className="text-muted-foreground/50">·</span>
+                    <span>·</span>
                     <span className="capitalize">{entry.platforms.join(', ')}</span>
                   </div>
                 </div>
@@ -323,7 +438,7 @@ export default function CampaignScheduler() {
                 </Button>
               </div>
             ))}
-            <Button onClick={saveAll} disabled={saving} className="gap-2 mt-2">
+            <Button onClick={saveAll} disabled={saving} className="w-full gap-2 mt-2">
               <CalendarClock className="w-4 h-4" />
               {saving ? 'Saving…' : `Schedule ${entries.length} Upload${entries.length > 1 ? 's' : ''}`}
             </Button>
@@ -331,21 +446,15 @@ export default function CampaignScheduler() {
         </Card>
       )}
 
-      {/* Already scheduled uploads from database */}
+      {/* Already scheduled */}
       {scheduled.length > 0 && (
         <Card>
-          <CardHeader>
+          <CardHeader className="pb-3">
             <CardTitle className="text-base">Scheduled Uploads</CardTitle>
-            <CardDescription>
-              These will be processed by the local server at their scheduled times
-            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {scheduled.map((item) => (
-              <div
-                key={item.id}
-                className="flex items-center justify-between rounded-lg border p-3"
-              >
+              <div key={item.id} className="flex items-center justify-between rounded-lg border p-3 gap-2">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-medium truncate">{item.title || item.video_file_name}</p>
@@ -360,15 +469,15 @@ export default function CampaignScheduler() {
                       </a>
                     )}
                   </div>
-                  <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-                    <Clock className="w-3 h-3" />
+                  <div className="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground flex-wrap">
+                    <Clock className="w-3 h-3 shrink-0" />
                     <span>{format(new Date(item.scheduled_at), 'PPp')}</span>
-                    <span className="text-muted-foreground/50">·</span>
+                    <span>·</span>
                     <span className="capitalize">{item.target_platforms.join(', ')}</span>
-                    <span className="text-muted-foreground/50">·</span>
+                    <span>·</span>
                     <Badge
                       variant="secondary"
-                      className={
+                      className={`text-[10px] px-1.5 py-0 ${
                         item.status === 'scheduled'
                           ? 'bg-amber-100 text-amber-700'
                           : item.status === 'completed'
@@ -376,7 +485,7 @@ export default function CampaignScheduler() {
                           : item.status === 'processing'
                           ? 'bg-blue-100 text-blue-700'
                           : 'bg-destructive/10 text-destructive'
-                      }
+                      }`}
                     >
                       {item.status}
                     </Badge>
@@ -398,16 +507,16 @@ export default function CampaignScheduler() {
         </Card>
       )}
 
-      {/* Info box */}
+      {/* Info */}
       {entries.length === 0 && scheduled.length === 0 && (
         <div className="flex items-start gap-3 rounded-lg border border-border p-4 text-sm">
           <Info className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
           <div className="text-muted-foreground">
             <p className="font-medium text-foreground mb-1">How campaigns work</p>
-            <ol className="list-decimal list-inside space-y-1">
-              <li>Add multiple videos with different scheduled times</li>
-              <li>Click "Schedule" to save them all to the database</li>
-              <li>The local server checks for due uploads and processes them automatically</li>
+            <ol className="list-decimal list-inside space-y-1 text-xs">
+              <li>Add videos with scheduled times (upload file or set folder path)</li>
+              <li>For folder mode, the system picks the latest video + matching .txt automatically</li>
+              <li>Uploads are processed at their scheduled times</li>
               <li>You get Telegram notifications for each completed upload</li>
             </ol>
           </div>
