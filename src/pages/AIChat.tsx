@@ -384,7 +384,7 @@ export default function AIChat() {
         onDelta: upsert,
         onDone: () => {
           setIsLoading(false);
-          setMessages((prev) =>
+          setAppMessages((prev) =>
             prev.map((m, i) =>
               i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
                 ? { ...m, timestamp: new Date().toISOString() }
