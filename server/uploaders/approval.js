@@ -1,11 +1,12 @@
 const fetch = require('node-fetch');
-const { sendTelegram } = require('../telegram');
+const { sendTelegram, sendTelegramPhoto } = require('../telegram');
 
 function parseApprovalCommand(rawText) {
   const text = String(rawText || '').trim();
   if (!text) return null;
 
   const normalized = text.toLowerCase();
+  const compact = normalized.replace(/\s+/g, ' ').trim();
   const approvedWords = ['approve', 'approved', 'ok', 'done', 'yes', 'continue'];
   if (approvedWords.some((w) => normalized === w || normalized.includes(` ${w}`) || normalized.startsWith(`${w} `))) {
     return { approved: true };
@@ -22,13 +23,81 @@ function parseApprovalCommand(rawText) {
     if (match?.[1]) return { approved: true, code: match[1] };
   }
 
+  const phoneMethodWords = ['method phone', 'method device', 'google prompt', 'use phone', 'phone', 'device'];
+  if (phoneMethodWords.some((w) => compact === w || compact.includes(w))) {
+    return { method: 'phone' };
+  }
+
+  const codeMethodWords = ['method code', 'method otp', 'use code', 'verification code', 'otp', 'code'];
+  if (codeMethodWords.some((w) => compact === w || compact.includes(w))) {
+    return { method: 'code' };
+  }
+
   return null;
 }
 
-async function requestTelegramApproval({ telegram, platform, customMessage, timeoutMs = 240000 }) {
-  if (!telegram?.enabled || !telegram?.botToken || !telegram?.chatId) return null;
+async function fetchApprovalFromTelegramUpdates({ telegram, startedAt, seenUpdateIds }) {
+  if (!telegram?.botToken || !telegram?.chatId) return null;
+
+  const response = await fetch(`https://api.telegram.org/bot${telegram.botToken}/getUpdates`, { method: 'GET' });
+  if (!response.ok) return null;
+
+  const data = await response.json();
+  const updates = Array.isArray(data?.result) ? data.result : [];
+
+  for (const update of updates) {
+    if (!update?.update_id || seenUpdateIds.has(update.update_id)) continue;
+    seenUpdateIds.add(update.update_id);
+
+    const message = update.message;
+    if (!message?.text) continue;
+    if (String(message.chat?.id) !== String(telegram.chatId)) continue;
+
+    const msgTsMs = Number(message.date || 0) * 1000;
+    if (msgTsMs && msgTsMs < startedAt - 10000) continue;
+
+    const parsed = parseApprovalCommand(message.text);
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+async function fetchApprovalFromBackendMessages({ telegram, backend, sinceIso }) {
+  if (!backend?.supabaseUrl || !backend?.supabaseKey || !telegram?.chatId) return null;
+
+  const params = new URLSearchParams({
+    select: 'text,created_at',
+    is_bot: 'eq.false',
+    chat_id: `eq.${String(telegram.chatId).trim()}`,
+    created_at: `gte.${sinceIso}`,
+    order: 'created_at.desc',
+    limit: '30',
+  });
+
+  const response = await fetch(`${backend.supabaseUrl}/rest/v1/telegram_messages?${params.toString()}`, {
+    method: 'GET',
+    headers: {
+      apikey: backend.supabaseKey,
+      Authorization: `Bearer ${backend.supabaseKey}`,
+    },
+  });
+
+  if (!response.ok) return null;
+  const rows = await response.json().catch(() => []);
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    const parsed = parseApprovalCommand(row?.text || '');
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+async function requestTelegramApproval({ telegram, platform, customMessage, timeoutMs = 240000, screenshotBuffer, backend }) {
+  if (!telegram?.enabled || !telegram?.chatId) return null;
 
   const startedAt = Date.now();
+  const sinceIso = new Date(startedAt - 3000).toISOString();
   const seenUpdateIds = new Set();
 
   // Send the notification — use custom message if provided, otherwise default
@@ -41,31 +110,26 @@ async function requestTelegramApproval({ telegram, platform, customMessage, time
     `• CODE 123456`
   );
 
-  await sendTelegram(telegram.botToken, telegram.chatId, message)
+  await sendTelegram(telegram.botToken, telegram.chatId, message, backend)
     .catch((e) => console.error('[Approval] Telegram notify failed:', e?.message || e));
+
+  if (screenshotBuffer) {
+    await sendTelegramPhoto(
+      telegram.botToken,
+      telegram.chatId,
+      screenshotBuffer,
+      `📸 <b>${platform}</b> verification screen`,
+      backend,
+    ).catch((e) => console.error('[Approval] Telegram screenshot failed:', e?.message || e));
+  }
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const response = await fetch(`https://api.telegram.org/bot${telegram.botToken}/getUpdates`, { method: 'GET' });
-      if (!response.ok) { await new Promise((r) => setTimeout(r, 4000)); continue; }
+      const parsedViaBot = await fetchApprovalFromTelegramUpdates({ telegram, startedAt, seenUpdateIds });
+      if (parsedViaBot) return parsedViaBot;
 
-      const data = await response.json();
-      const updates = Array.isArray(data?.result) ? data.result : [];
-
-      for (const update of updates) {
-        if (!update?.update_id || seenUpdateIds.has(update.update_id)) continue;
-        seenUpdateIds.add(update.update_id);
-
-        const message = update.message;
-        if (!message?.text) continue;
-        if (String(message.chat?.id) !== String(telegram.chatId)) continue;
-
-        const msgTsMs = Number(message.date || 0) * 1000;
-        if (msgTsMs && msgTsMs < startedAt - 10000) continue;
-
-        const parsed = parseApprovalCommand(message.text);
-        if (parsed) return parsed;
-      }
+      const parsedViaBackend = await fetchApprovalFromBackendMessages({ telegram, backend, sinceIso });
+      if (parsedViaBackend) return parsedViaBackend;
     } catch (e) {
       console.error('[Approval] Polling failed:', e?.message || e);
     }
