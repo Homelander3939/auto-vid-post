@@ -917,8 +917,25 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       || await captureVideoUrlCandidate(page, '');
 
     console.log(`[YouTube] Upload complete! URL: ${videoUrl || 'not captured'}`);
+
+    // ===== PHASE 9: CLOSE POPUP & SCRAPE SHORTS STATS =====
+    let recentStats = [];
+    try {
+      // Close any success/processing popup/dialog
+      await page.evaluate(() => {
+        const closeButtons = document.querySelectorAll('[aria-label="Close"], #close-button, .close-button, ytcp-button[id="close-button"]');
+        for (const btn of closeButtons) { btn.click(); }
+      });
+      await page.waitForTimeout(1500);
+
+      const { scrapeYouTubeShortsStats } = require('./stats-scraper');
+      recentStats = await scrapeYouTubeShortsStats(page, { maxVideos: 10 });
+    } catch (statsErr) {
+      console.warn('[YouTube] Stats scraping failed (non-fatal):', statsErr.message);
+    }
+
     await context.close();
-    return { url: videoUrl || undefined };
+    return { url: videoUrl || undefined, recentStats };
   } catch (err) {
     console.error('[YouTube] Upload failed:', err.message);
     await context.close();
