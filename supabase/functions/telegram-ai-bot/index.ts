@@ -199,6 +199,78 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
       if (error) return `❌ Failed: ${error.message}`;
       return `✅ Job "${data.title || data.video_file_name}" reset to pending.`;
     }
+    case 'clear_jobs_by_status': {
+      let query = supabase.from('upload_jobs').delete();
+      if (args.status !== 'all') {
+        query = query.eq('status', args.status);
+      } else {
+        query = query.neq('id', '00000000-0000-0000-0000-000000000000');
+      }
+      const { error, count } = await query;
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Cleared ${args.status === 'all' ? 'all' : args.status} jobs.`;
+    }
+    case 'edit_upload_job': {
+      const updates: any = {};
+      if (args.title !== undefined) updates.title = args.title;
+      if (args.description !== undefined) updates.description = args.description;
+      if (args.tags !== undefined) updates.tags = args.tags;
+      if (args.target_platforms !== undefined) updates.target_platforms = args.target_platforms;
+      const { data, error } = await supabase.from('upload_jobs').update(updates).eq('id', args.job_id).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Updated job "${data.title}": platforms=${data.target_platforms?.join(', ')}, tags=${data.tags?.join(', ')}`;
+    }
+    case 'delete_scheduled_upload': {
+      const { error } = await supabase.from('scheduled_uploads').delete().eq('id', args.scheduled_id);
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Scheduled upload deleted.`;
+    }
+    case 'edit_scheduled_upload': {
+      const updates: any = {};
+      if (args.title !== undefined) updates.title = args.title;
+      if (args.description !== undefined) updates.description = args.description;
+      if (args.tags !== undefined) updates.tags = args.tags;
+      if (args.target_platforms !== undefined) updates.target_platforms = args.target_platforms;
+      if (args.scheduled_at !== undefined) updates.scheduled_at = args.scheduled_at;
+      const { data, error } = await supabase.from('scheduled_uploads').update(updates).eq('id', args.scheduled_id).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Updated scheduled upload "${data.title}" → ${new Date(data.scheduled_at).toLocaleString()}`;
+    }
+    case 'manage_recurring_schedule': {
+      if (args.action === 'delete') {
+        if (!args.schedule_id) return '❌ Need schedule_id to delete.';
+        const { error } = await supabase.from('schedule_config').delete().eq('id', args.schedule_id);
+        if (error) return `❌ Failed: ${error.message}`;
+        return `✅ Recurring schedule #${args.schedule_id} deleted.`;
+      }
+      if (args.action === 'create') {
+        const payload: any = {
+          name: args.name || 'Schedule',
+          enabled: args.enabled ?? false,
+          cron_expression: args.cron_expression || '0 9 * * *',
+          platforms: args.platforms || ['youtube'],
+          folder_path: args.folder_path || '',
+          end_at: args.end_at || null,
+        };
+        const { data, error } = await supabase.from('schedule_config').insert(payload).select().single();
+        if (error) return `❌ Failed: ${error.message}`;
+        return `✅ Created recurring schedule "${data.name}" (#${data.id}): ${data.cron_expression}, ${data.platforms.join(', ')}`;
+      }
+      if (args.action === 'update') {
+        if (!args.schedule_id) return '❌ Need schedule_id to update.';
+        const updates: any = {};
+        if (args.name !== undefined) updates.name = args.name;
+        if (args.enabled !== undefined) updates.enabled = args.enabled;
+        if (args.cron_expression !== undefined) updates.cron_expression = args.cron_expression;
+        if (args.platforms !== undefined) updates.platforms = args.platforms;
+        if (args.folder_path !== undefined) updates.folder_path = args.folder_path;
+        if (args.end_at !== undefined) updates.end_at = args.end_at;
+        const { data, error } = await supabase.from('schedule_config').update(updates).eq('id', args.schedule_id).select().single();
+        if (error) return `❌ Failed: ${error.message}`;
+        return `✅ Updated schedule "${data.name}" (#${data.id})`;
+      }
+      return '❌ Unknown action. Use create, update, or delete.';
+    }
     default: return `Unknown tool: ${name}`;
   }
 }
