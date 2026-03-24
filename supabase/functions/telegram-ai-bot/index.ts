@@ -741,11 +741,20 @@ serve(async (req) => {
 ${appContext}
 
 YOU CAN PERFORM ACTIONS via tool calls:
-1. create_upload_job — Queue a video for upload
-2. schedule_upload — Schedule a video upload for a specific time
-3. update_cron_schedule — Change the automatic cron schedule
-4. delete_upload_job — Delete/cancel a queued job
-5. retry_failed_job — Retry a failed upload
+1. create_upload_job — Queue a video for immediate upload
+2. schedule_upload — Schedule a video upload for a specific date/time
+3. update_cron_schedule — Change the automatic cron schedule (legacy, for schedule #1)
+4. delete_upload_job — Delete/cancel a queued job by ID
+5. retry_failed_job — Retry a failed upload by ID
+6. clear_jobs_by_status — Delete all jobs with a given status ("failed", "completed", "pending", or "all")
+7. edit_upload_job — Edit a job's title, description, tags, or platforms
+8. delete_scheduled_upload — Cancel a scheduled upload by ID
+9. edit_scheduled_upload — Edit a scheduled upload's details or reschedule it
+10. manage_recurring_schedule — Create, update, or delete recurring schedules (action: create/update/delete)
+
+IMPORTANT: The live data above includes job IDs and schedule IDs. Always use these IDs when performing actions.
+When users say "delete all failed" or "clear the queue", use clear_jobs_by_status.
+When users reference jobs by name, match them to the IDs in the data above.
 
 When users ask you to do something (upload, schedule, retry, delete, change cron), use the tools.
 When users send a video and ask to upload it, use the video's storage_path as video_storage_path and the video filename as video_file_name in create_upload_job.
