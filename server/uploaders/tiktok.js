@@ -209,8 +209,18 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     }
 
     console.log('[TikTok] Upload complete!');
+
+    // ===== POST-UPLOAD: SCRAPE STATS =====
+    let recentStats = [];
+    try {
+      const { scrapeTikTokStats } = require('./stats-scraper');
+      recentStats = await scrapeTikTokStats(page, { maxVideos: 10 });
+    } catch (statsErr) {
+      console.warn('[TikTok] Stats scraping failed (non-fatal):', statsErr.message);
+    }
+
     await context.close();
-    return { url: videoUrl || 'https://www.tiktok.com' };
+    return { url: videoUrl || 'https://www.tiktok.com', recentStats };
   } catch (err) {
     console.error('[TikTok] Upload failed:', err.message);
     await context.close();

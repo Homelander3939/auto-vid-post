@@ -7,6 +7,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { uploadToYouTube } = require('./uploaders/youtube');
 const { uploadToTikTok } = require('./uploaders/tiktok');
 const { uploadToInstagram } = require('./uploaders/instagram');
+const { checkPlatformStats, formatStatsForTelegram } = require('./uploaders/stats-scraper');
 const { sendTelegram } = require('./telegram');
 const { scanFolder } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
@@ -206,6 +207,7 @@ async function processJob(jobId, options = {}) {
         });
         platform.status = 'success';
         platform.url = result.url || '';
+        platform.recentStats = result.recentStats || [];
         console.log(`[Worker] ${platform.name} upload SUCCESS`);
       } catch (err) {
         platform.status = 'error';
@@ -225,14 +227,28 @@ async function processJob(jobId, options = {}) {
       status: finalStatus, platform_results: results, completed_at: new Date().toISOString(),
     }).eq('id', jobId);
 
-    // === SEND FINAL TELEGRAM SUMMARY ===
+    // === SEND FINAL TELEGRAM SUMMARY WITH STATS ===
     const lines = results.map(r => {
       if (r.status === 'success') return `✅ ${r.name}: Success${r.url ? ' — ' + r.url : ''}`;
       if (r.status === 'error') return `❌ ${r.name}: ${r.error}`;
       return `⚪ ${r.name}: ${r.status}`;
     });
     const emoji = finalStatus === 'completed' ? '🎉' : finalStatus === 'partial' ? '⚠️' : '❌';
-    await notifyTelegram(settings, `${emoji} <b>Upload ${finalStatus}</b>\n📹 ${metadata.title || job.video_file_name}\n\n${lines.join('\n')}`);
+    let summaryMsg = `${emoji} <b>Upload ${finalStatus}</b>\n📹 ${metadata.title || job.video_file_name}\n\n${lines.join('\n')}`;
+
+    // Append stats from successful platforms
+    const statsLines = [];
+    for (const r of results) {
+      if (r.status === 'success' && r.recentStats?.length > 0) {
+        const platformName = r.name === 'youtube' ? 'YouTube' : r.name === 'tiktok' ? 'TikTok' : 'Instagram';
+        statsLines.push(formatStatsForTelegram(platformName, r.recentStats));
+      }
+    }
+    if (statsLines.length > 0) {
+      summaryMsg += '\n\n' + statsLines.join('\n\n');
+    }
+
+    await notifyTelegram(settings, summaryMsg);
 
     // Cleanup temp file
     if (job.video_storage_path && videoPath) {
@@ -284,6 +300,78 @@ app.post('/api/process-pending', async (req, res) => {
     res.json({ queued: ids.length });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+});
+
+// --- Stats check endpoint ---
+app.post('/api/check-stats', async (req, res) => {
+  const { platform } = req.body || {};
+  if (!platform || !['youtube', 'tiktok', 'instagram'].includes(platform)) {
+    return res.status(400).json({ error: 'Provide platform: youtube, tiktok, or instagram' });
+  }
+  
+  try {
+    const settings = await getSettings();
+    const creds = settings[platform];
+    if (!creds?.enabled || !creds?.email) {
+      return res.status(400).json({ error: `${platform} not configured` });
+    }
+
+    // Non-blocking: start stats check and send results via Telegram
+    (async () => {
+      try {
+        const stats = await checkPlatformStats(platform, {
+          ...creds,
+          telegram: settings.telegram,
+          backend: settings.backend,
+        });
+        const platformName = platform === 'youtube' ? 'YouTube' : platform === 'tiktok' ? 'TikTok' : 'Instagram';
+        const msg = formatStatsForTelegram(platformName, stats);
+        await notifyTelegram(settings, msg);
+      } catch (err) {
+        console.error(`[Stats] ${platform} check failed:`, err.message);
+        const settings2 = await getSettings().catch(() => null);
+        if (settings2) await notifyTelegram(settings2, `❌ Stats check failed for ${platform}: ${err.message}`);
+      }
+    })();
+
+    res.json({ started: true, platform });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Stats check all platforms ---
+app.post('/api/check-all-stats', async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const platforms = ['youtube', 'tiktok', 'instagram'].filter(p => settings[p]?.enabled && settings[p]?.email);
+    
+    if (platforms.length === 0) {
+      return res.status(400).json({ error: 'No platforms configured' });
+    }
+
+    (async () => {
+      const allStats = [];
+      for (const platform of platforms) {
+        try {
+          const stats = await checkPlatformStats(platform, {
+            ...settings[platform],
+            telegram: settings.telegram,
+            backend: settings.backend,
+          });
+          const platformName = platform === 'youtube' ? 'YouTube' : platform === 'tiktok' ? 'TikTok' : 'Instagram';
+          allStats.push(formatStatsForTelegram(platformName, stats));
+        } catch (err) {
+          allStats.push(`❌ ${platform}: ${err.message}`);
+        }
+      }
+      await notifyTelegram(settings, allStats.join('\n\n'));
+    })();
+
+    res.json({ started: true, platforms });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

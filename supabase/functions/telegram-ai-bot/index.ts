@@ -153,6 +153,20 @@ const tools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'check_platform_stats',
+      description: 'Check video stats (views, likes, comments) for a platform. Opens browser, logs in, scrapes recent video stats. Use "all" to check all configured platforms.',
+      parameters: {
+        type: 'object',
+        properties: {
+          platform: { type: 'string', enum: ['youtube', 'tiktok', 'instagram', 'all'], description: 'Platform to check stats for, or "all"' },
+        },
+        required: ['platform'],
+      },
+    },
+  },
 ];
 
 async function executeTool(supabase: any, name: string, args: any): Promise<string> {
@@ -270,6 +284,28 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
         return `✅ Updated schedule "${data.name}" (#${data.id})`;
       }
       return '❌ Unknown action. Use create, update, or delete.';
+    }
+    case 'check_platform_stats': {
+      // This triggers the local server to open browser and scrape stats
+      const platform = args.platform || 'all';
+      const endpoint = platform === 'all' ? '/api/check-all-stats' : '/api/check-stats';
+      const body = platform === 'all' ? {} : { platform };
+      
+      // Try local server first
+      try {
+        const localResp = await fetch(`http://localhost:3001${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (localResp.ok) {
+          const result = await localResp.json();
+          return `✅ Stats check started for ${platform === 'all' ? 'all platforms' : platform}. Results will be sent to you in Telegram shortly.`;
+        }
+      } catch {
+        // Local server not reachable
+      }
+      return `⚠️ Stats check requires the local server to be running (it opens a browser to scrape stats). Start your local server and try again.`;
     }
     default: return `Unknown tool: ${name}`;
   }
@@ -751,10 +787,12 @@ YOU CAN PERFORM ACTIONS via tool calls:
 8. delete_scheduled_upload — Cancel a scheduled upload by ID
 9. edit_scheduled_upload — Edit a scheduled upload's details or reschedule it
 10. manage_recurring_schedule — Create, update, or delete recurring schedules (action: create/update/delete)
+11. check_platform_stats — Check video stats (views, likes, comments) for YouTube Shorts, TikTok, or Instagram Reels. Use "all" to check all platforms. Requires local server.
 
 IMPORTANT: The live data above includes job IDs and schedule IDs. Always use these IDs when performing actions.
 When users say "delete all failed" or "clear the queue", use clear_jobs_by_status.
 When users reference jobs by name, match them to the IDs in the data above.
+When users ask to check stats, views, likes, comments, or performance of their videos, use check_platform_stats.
 
 When users ask you to do something (upload, schedule, retry, delete, change cron), use the tools.
 When users send a video and ask to upload it, use the video's storage_path as video_storage_path and the video filename as video_file_name in create_upload_job.

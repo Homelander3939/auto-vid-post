@@ -237,8 +237,18 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     }
 
     console.log('[Instagram] Upload complete!');
+
+    // ===== POST-UPLOAD: SCRAPE STATS =====
+    let recentStats = [];
+    try {
+      const { scrapeInstagramReelsStats } = require('./stats-scraper');
+      recentStats = await scrapeInstagramReelsStats(page, { maxVideos: 10 });
+    } catch (statsErr) {
+      console.warn('[Instagram] Stats scraping failed (non-fatal):', statsErr.message);
+    }
+
     await context.close();
-    return { url: postUrl || 'https://www.instagram.com' };
+    return { url: postUrl || 'https://www.instagram.com', recentStats };
   } catch (err) {
     console.error('[Instagram] Upload failed:', err.message);
     await context.close();
