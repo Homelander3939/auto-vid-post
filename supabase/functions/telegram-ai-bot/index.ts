@@ -79,6 +79,80 @@ const tools = [
       parameters: { type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'] },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'clear_jobs_by_status',
+      description: 'Delete all upload jobs with a given status (e.g. "failed", "completed", "pending") or "all" to clear everything.',
+      parameters: { type: 'object', properties: { status: { type: 'string', description: 'Job status to clear, or "all"' } }, required: ['status'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_upload_job',
+      description: 'Edit an upload job title, description, tags, or target platforms.',
+      parameters: {
+        type: 'object',
+        properties: {
+          job_id: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+        },
+        required: ['job_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_scheduled_upload',
+      description: 'Delete/cancel a scheduled upload by ID.',
+      parameters: { type: 'object', properties: { scheduled_id: { type: 'string' } }, required: ['scheduled_id'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_scheduled_upload',
+      description: 'Edit a scheduled upload title, description, tags, platforms, or scheduled_at time.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scheduled_id: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          scheduled_at: { type: 'string' },
+        },
+        required: ['scheduled_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'manage_recurring_schedule',
+      description: 'Create, update, or delete a recurring schedule. Use action "create", "update", or "delete".',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['create', 'update', 'delete'] },
+          schedule_id: { type: 'number', description: 'Required for update/delete' },
+          name: { type: 'string' },
+          enabled: { type: 'boolean' },
+          cron_expression: { type: 'string' },
+          platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          folder_path: { type: 'string' },
+          end_at: { type: 'string', description: 'ISO date when schedule should stop' },
+        },
+        required: ['action'],
+      },
+    },
+  },
 ];
 
 async function executeTool(supabase: any, name: string, args: any): Promise<string> {
@@ -124,6 +198,78 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
         .eq('id', args.job_id).select().single();
       if (error) return `❌ Failed: ${error.message}`;
       return `✅ Job "${data.title || data.video_file_name}" reset to pending.`;
+    }
+    case 'clear_jobs_by_status': {
+      let query = supabase.from('upload_jobs').delete();
+      if (args.status !== 'all') {
+        query = query.eq('status', args.status);
+      } else {
+        query = query.neq('id', '00000000-0000-0000-0000-000000000000');
+      }
+      const { error, count } = await query;
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Cleared ${args.status === 'all' ? 'all' : args.status} jobs.`;
+    }
+    case 'edit_upload_job': {
+      const updates: any = {};
+      if (args.title !== undefined) updates.title = args.title;
+      if (args.description !== undefined) updates.description = args.description;
+      if (args.tags !== undefined) updates.tags = args.tags;
+      if (args.target_platforms !== undefined) updates.target_platforms = args.target_platforms;
+      const { data, error } = await supabase.from('upload_jobs').update(updates).eq('id', args.job_id).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Updated job "${data.title}": platforms=${data.target_platforms?.join(', ')}, tags=${data.tags?.join(', ')}`;
+    }
+    case 'delete_scheduled_upload': {
+      const { error } = await supabase.from('scheduled_uploads').delete().eq('id', args.scheduled_id);
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Scheduled upload deleted.`;
+    }
+    case 'edit_scheduled_upload': {
+      const updates: any = {};
+      if (args.title !== undefined) updates.title = args.title;
+      if (args.description !== undefined) updates.description = args.description;
+      if (args.tags !== undefined) updates.tags = args.tags;
+      if (args.target_platforms !== undefined) updates.target_platforms = args.target_platforms;
+      if (args.scheduled_at !== undefined) updates.scheduled_at = args.scheduled_at;
+      const { data, error } = await supabase.from('scheduled_uploads').update(updates).eq('id', args.scheduled_id).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Updated scheduled upload "${data.title}" → ${new Date(data.scheduled_at).toLocaleString()}`;
+    }
+    case 'manage_recurring_schedule': {
+      if (args.action === 'delete') {
+        if (!args.schedule_id) return '❌ Need schedule_id to delete.';
+        const { error } = await supabase.from('schedule_config').delete().eq('id', args.schedule_id);
+        if (error) return `❌ Failed: ${error.message}`;
+        return `✅ Recurring schedule #${args.schedule_id} deleted.`;
+      }
+      if (args.action === 'create') {
+        const payload: any = {
+          name: args.name || 'Schedule',
+          enabled: args.enabled ?? false,
+          cron_expression: args.cron_expression || '0 9 * * *',
+          platforms: args.platforms || ['youtube'],
+          folder_path: args.folder_path || '',
+          end_at: args.end_at || null,
+        };
+        const { data, error } = await supabase.from('schedule_config').insert(payload).select().single();
+        if (error) return `❌ Failed: ${error.message}`;
+        return `✅ Created recurring schedule "${data.name}" (#${data.id}): ${data.cron_expression}, ${data.platforms.join(', ')}`;
+      }
+      if (args.action === 'update') {
+        if (!args.schedule_id) return '❌ Need schedule_id to update.';
+        const updates: any = {};
+        if (args.name !== undefined) updates.name = args.name;
+        if (args.enabled !== undefined) updates.enabled = args.enabled;
+        if (args.cron_expression !== undefined) updates.cron_expression = args.cron_expression;
+        if (args.platforms !== undefined) updates.platforms = args.platforms;
+        if (args.folder_path !== undefined) updates.folder_path = args.folder_path;
+        if (args.end_at !== undefined) updates.end_at = args.end_at;
+        const { data, error } = await supabase.from('schedule_config').update(updates).eq('id', args.schedule_id).select().single();
+        if (error) return `❌ Failed: ${error.message}`;
+        return `✅ Updated schedule "${data.name}" (#${data.id})`;
+      }
+      return '❌ Unknown action. Use create, update, or delete.';
     }
     default: return `Unknown tool: ${name}`;
   }
@@ -204,12 +350,12 @@ async function getAppContext(supabase: any): Promise<string> {
     { data: jobs },
     { data: scheduled },
     { data: settings },
-    { data: scheduleConfig },
+    { data: scheduleConfigs },
   ] = await Promise.all([
     supabase.from('upload_jobs').select('*').order('created_at', { ascending: false }).limit(20),
     supabase.from('scheduled_uploads').select('*').order('scheduled_at', { ascending: true }).limit(20),
     supabase.from('app_settings').select('*').eq('id', 1).single(),
-    supabase.from('schedule_config').select('*').eq('id', 1).single(),
+    supabase.from('schedule_config').select('*').order('id', { ascending: true }),
   ]);
 
   const pendingJobs = (jobs || []).filter((j: any) => j.status === 'pending');
@@ -219,10 +365,13 @@ async function getAppContext(supabase: any): Promise<string> {
   const upcomingScheduled = (scheduled || []).filter((s: any) => s.status === 'scheduled');
 
   const formatJob = (j: any) =>
-    `• "${j.title || j.video_file_name}" → ${j.target_platforms?.join(', ') || 'none'} [${j.status}]`;
+    `  ID: ${j.id} | "${j.title || j.video_file_name}" → ${j.target_platforms?.join(', ') || 'none'} [${j.status}]`;
 
   const formatScheduled = (s: any) =>
-    `• "${s.title || s.video_file_name}" → ${new Date(s.scheduled_at).toLocaleString()} [${s.status}]`;
+    `  ID: ${s.id} | "${s.title || s.video_file_name}" → ${s.target_platforms?.join(', ')} at ${new Date(s.scheduled_at).toLocaleString()} [${s.status}]`;
+
+  const formatRecurring = (c: any) =>
+    `  #${c.id} "${c.name}" | ${c.enabled ? 'ON' : 'OFF'} | ${c.cron_expression} | ${c.platforms?.join(', ')} | folder: ${c.folder_path || '(none)'}${c.end_at ? ` | ends: ${new Date(c.end_at).toLocaleString()}` : ''}`;
 
   const platformStatus = [];
   if (settings) {
@@ -233,13 +382,19 @@ async function getAppContext(supabase: any): Promise<string> {
 
   return `
 === LIVE APP DATA ===
-Platforms: ${platformStatus.join(', ') || 'None'}
+Platforms: ${platformStatus.join(', ') || 'None configured'}
+Upload Mode: ${settings?.upload_mode || 'local'}
+
 Queue: ${pendingJobs.length} pending, ${processingJobs.length} processing, ${completedJobs.length} done, ${failedJobs.length} failed
-${pendingJobs.length > 0 ? `Pending:\n${pendingJobs.map(formatJob).join('\n')}` : 'No pending jobs.'}
+${pendingJobs.length > 0 ? `Pending:\n${pendingJobs.map(formatJob).join('\n')}` : ''}
 ${failedJobs.length > 0 ? `Failed:\n${failedJobs.map(formatJob).join('\n')}` : ''}
-${completedJobs.length > 0 ? `Recent done:\n${completedJobs.slice(0, 3).map(formatJob).join('\n')}` : ''}
-Scheduled: ${upcomingScheduled.length} upcoming
+${completedJobs.length > 0 ? `Recent completed:\n${completedJobs.slice(0, 5).map(formatJob).join('\n')}` : ''}
+
+Scheduled uploads: ${upcomingScheduled.length} upcoming
 ${upcomingScheduled.length > 0 ? upcomingScheduled.map(formatScheduled).join('\n') : ''}
+
+Recurring schedules: ${(scheduleConfigs || []).length}
+${(scheduleConfigs || []).length > 0 ? (scheduleConfigs || []).map(formatRecurring).join('\n') : 'None'}
 ===`;
 }
 
@@ -586,11 +741,20 @@ serve(async (req) => {
 ${appContext}
 
 YOU CAN PERFORM ACTIONS via tool calls:
-1. create_upload_job — Queue a video for upload
-2. schedule_upload — Schedule a video upload for a specific time
-3. update_cron_schedule — Change the automatic cron schedule
-4. delete_upload_job — Delete/cancel a queued job
-5. retry_failed_job — Retry a failed upload
+1. create_upload_job — Queue a video for immediate upload
+2. schedule_upload — Schedule a video upload for a specific date/time
+3. update_cron_schedule — Change the automatic cron schedule (legacy, for schedule #1)
+4. delete_upload_job — Delete/cancel a queued job by ID
+5. retry_failed_job — Retry a failed upload by ID
+6. clear_jobs_by_status — Delete all jobs with a given status ("failed", "completed", "pending", or "all")
+7. edit_upload_job — Edit a job's title, description, tags, or platforms
+8. delete_scheduled_upload — Cancel a scheduled upload by ID
+9. edit_scheduled_upload — Edit a scheduled upload's details or reschedule it
+10. manage_recurring_schedule — Create, update, or delete recurring schedules (action: create/update/delete)
+
+IMPORTANT: The live data above includes job IDs and schedule IDs. Always use these IDs when performing actions.
+When users say "delete all failed" or "clear the queue", use clear_jobs_by_status.
+When users reference jobs by name, match them to the IDs in the data above.
 
 When users ask you to do something (upload, schedule, retry, delete, change cron), use the tools.
 When users send a video and ask to upload it, use the video's storage_path as video_storage_path and the video filename as video_file_name in create_upload_job.
