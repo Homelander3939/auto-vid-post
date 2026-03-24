@@ -6,11 +6,11 @@ const path = require('path');
 const fs = require('fs');
 
 // ─── YouTube Shorts Stats ───────────────────────────────────
+
 async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
   console.log('[Stats] Scraping YouTube Shorts stats...');
   try {
-    // Navigate to YouTube Studio and resolve the real channel ID from the URL.
-    // (The placeholder "/channel/UC" does not work — we need the actual ID.)
+    // Navigate to YouTube Studio
     await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(2000);
 
@@ -20,100 +20,226 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
       return m ? m[1] : '';
     }).catch(() => '');
 
-    // Also grab the handle/vanity URL for the public Shorts page fallback
+    // Grab the @handle for the public Shorts page fallback
     const channelHandle = await page.evaluate(() => {
-      // Look for the @handle link in the Studio sidebar or header
       const links = Array.from(document.querySelectorAll('a[href*="youtube.com/@"], a[href*="/@"]'));
       for (const link of links) {
-        const href = link.getAttribute('href') || '';
-        const m = href.match(/\/@([^/?&]+)/);
+        const m = (link.getAttribute('href') || '').match(/\/@([^/?&]+)/);
         if (m) return '@' + m[1];
       }
       return '';
     }).catch(() => '');
 
+    // ── STRATEGY 1: YouTube Studio Innertube API (most reliable) ─────────────
+    // Studio is an SPA that uses the Innertube API internally. Since the page
+    // already holds a valid session, we can call the same endpoint directly.
+    const apiResult = await page.evaluate(async () => {
+      try {
+        const apiKey = (window.ytcfg && window.ytcfg.get('INNERTUBE_API_KEY')) || '';
+        const clientVer = (window.ytcfg && window.ytcfg.get('INNERTUBE_CLIENT_VERSION')) || '1.20250101.00.00';
+        if (!apiKey) return null;
+
+        const resp = await fetch(
+          `/youtubei/v1/creator/list_creator_videos?key=${apiKey}&prettyPrint=false`,
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json', 'X-Goog-AuthUser': '0' },
+            body: JSON.stringify({
+              filter: { videoType: { type: 'VIDEO_TYPE_SHORT' } },
+              order: 'VIDEO_ORDER_DISPLAY_DATE_DESC',
+              pageSize: 30,
+              context: {
+                client: { clientName: 'CREATOR_STUDIO', clientVersion: clientVer },
+              },
+            }),
+          }
+        );
+        if (!resp.ok) return null;
+        return await resp.json();
+      } catch (_) { return null; }
+    }).catch(() => null);
+
+    if (apiResult) {
+      const videoList = apiResult.videos || apiResult.items || [];
+      const apiStats = videoList.slice(0, maxVideos).map(v => {
+        const videoId = v.videoId || '';
+
+        let title = '';
+        if (typeof v.title === 'string') title = v.title;
+        else if (v.title?.simpleText) title = v.title.simpleText;
+        else if (v.title?.runs) title = (v.title.runs).map(r => r.text || '').join('');
+        else if (v.snippet?.title) title = v.snippet.title;
+
+        let views = '—', likes = '—', comments = '—';
+        const m = v.metrics || v.statistics || {};
+        if (m.viewCount !== undefined) {
+          views = typeof m.viewCount === 'object'
+            ? String(m.viewCount.views ?? m.viewCount.displayValue ?? '—')
+            : String(m.viewCount);
+        }
+        if (m.likeCount !== undefined) {
+          likes = typeof m.likeCount === 'object'
+            ? String(m.likeCount.likes ?? m.likeCount.displayValue ?? '—')
+            : String(m.likeCount);
+        }
+        if (m.commentCount !== undefined) {
+          comments = typeof m.commentCount === 'object'
+            ? String(m.commentCount.comments ?? m.commentCount.displayValue ?? '—')
+            : String(m.commentCount);
+        }
+
+        return { title: title || '', videoId, url: videoId ? `https://youtube.com/shorts/${videoId}` : '', views, likes, comments };
+      }).filter(v => v.title && v.videoId);
+
+      if (apiStats.length > 0) {
+        console.log(`[Stats] Found ${apiStats.length} YouTube Shorts via Studio Innertube API`);
+        return apiStats;
+      }
+    }
+
+    // ── STRATEGY 2: Navigate to Studio Shorts content page + DOM scraping ────
     if (studioChannelId) {
-      // Navigate to the Studio content page filtered to Shorts
       await page.goto(
         `https://studio.youtube.com/channel/${studioChannelId}/videos?filter=%5B%7B%22name%22%3A%22VIDEO_TYPE%22%2C%22value%22%3A%22VIDEO_TYPE_SHORT%22%7D%5D`,
         { waitUntil: 'networkidle', timeout: 30000 }
       ).catch(async () => {
-        // Fallback: plain content page
         await page.goto(`https://studio.youtube.com/channel/${studioChannelId}/videos`, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
       });
-      await page.waitForTimeout(3000);
-
-      // Try to click "Shorts" tab if available
-      await page.evaluate(() => {
-        const tabs = document.querySelectorAll('[role="tab"], tp-yt-paper-tab, a');
-        for (const tab of tabs) {
-          const text = (tab.textContent || '').toLowerCase().trim();
-          if (text === 'shorts') { tab.click(); return true; }
-        }
-        return false;
-      });
-      await page.waitForTimeout(2000);
     } else {
-      // No channel ID found in URL — fall back to content page via sidebar click
-      await page.evaluate(() => {
-        const links = document.querySelectorAll('a, [role="tab"], tp-yt-paper-tab');
-        for (const link of links) {
-          const text = (link.textContent || '').toLowerCase();
-          if (text.includes('content') || text.includes('videos')) { link.click(); return true; }
+      await page.goto('https://studio.youtube.com/videos', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+    }
+    await page.waitForTimeout(3000);
+
+    // Click the Shorts tab if visible
+    await page.evaluate(() => {
+      const tabs = document.querySelectorAll('[role="tab"], tp-yt-paper-tab, a');
+      for (const tab of tabs) {
+        if ((tab.textContent || '').toLowerCase().trim() === 'shorts') { tab.click(); return; }
+      }
+    });
+    await page.waitForTimeout(2500);
+
+    // DOM scraping with shadow-DOM traversal and deduplication
+    const domStats = await page.evaluate((max) => {
+      // ── helpers (re-defined inside evaluate so they're serialisable) ─────
+      function deepAll(root, selector) {
+        const found = [];
+        try { found.push(...Array.from(root.querySelectorAll(selector))); } catch (_) {}
+        try {
+          for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) found.push(...deepAll(el.shadowRoot, selector));
+          }
+        } catch (_) {}
+        return found;
+      }
+
+      function isDur(t) { return /^\d{1,2}:\d{2}(:\d{2})?$/.test((t || '').trim()); }
+
+      function isInsideThumbnail(el) {
+        let p = el;
+        for (let i = 0; i < 12; i++) { // traverse up to 12 ancestor levels
+          if (!p) break;
+          const tag = (p.tagName || '').toLowerCase();
+          const cls = (p.className || '').toString().toLowerCase();
+          if (tag === 'ytcp-video-thumbnail' || cls.includes('thumbnail')) return true;
+          p = p.parentElement || (p.getRootNode && p.getRootNode().host) || null;
         }
         return false;
-      });
-      await page.waitForTimeout(3000);
-    }
+      }
 
-    // Extract stats from the video list table
-    const stats = await page.evaluate((max) => {
       const results = [];
-      const rows = document.querySelectorAll('ytcp-video-row, tr.video-row, [class*="video-row"], table tbody tr');
+      const seenIds = new Set();
+
+      // Find video rows (try multiple selectors; shadow DOM included)
+      let rows = deepAll(document, 'ytcp-video-row');
+      if (rows.length === 0) rows = deepAll(document, 'tr.video-row, [class*="video-row"]');
 
       for (const row of rows) {
         if (results.length >= max) break;
 
-        const titleEl = row.querySelector('a#video-title, [id="video-title"], .video-title, a[href*="/video/"]');
-        const title = (titleEl?.textContent || '').trim();
-        if (!title) continue;
+        // ── Video ID ──────────────────────────────────────────────────────
+        let videoId = '';
+        for (const link of deepAll(row, 'a[href*="/video/"]')) {
+          const m = (link.getAttribute('href') || '').match(/\/video\/([a-zA-Z0-9_-]+)/);
+          if (m) { videoId = m[1]; break; }
+        }
+        if (!videoId || seenIds.has(videoId)) continue;
+        seenIds.add(videoId);
 
-        const cells = row.querySelectorAll('td, .cell-content, [class*="cell"]');
-        const allText = Array.from(cells).map(c => (c.textContent || '').trim());
-
-        const numbers = [];
-        for (const cellText of allText) {
-          const cleaned = cellText.replace(/[,\s]/g, '');
-          if (/^\d+(\.\d+)?[KMBkmb]?$/.test(cleaned)) numbers.push(cellText.trim());
+        // ── Title ─────────────────────────────────────────────────────────
+        // Priority: specific title elements that are NOT inside the thumbnail.
+        let title = '';
+        const titleCandidates = deepAll(row, '#video-title, [id="video-title"], [class*="title-text"], h3');
+        for (const el of titleCandidates) {
+          if (isInsideThumbnail(el)) continue;
+          const t = (el.textContent || '').trim();
+          if (!isDur(t) && t.length > 2) { title = t; break; }
         }
 
-        const ariaValues = Array.from(row.querySelectorAll('[aria-label]'))
-          .map(el => el.getAttribute('aria-label') || '')
-          .filter(v => /\d/.test(v));
+        // Fallback: links to /edit or /details (these carry the real title text)
+        if (!title) {
+          for (const link of deepAll(row, 'a[href*="/edit"], a[href*="/details"]')) {
+            const t = (link.textContent || '').trim();
+            if (!isDur(t) && t.length > 5) { title = t; break; }
+          }
+        }
 
-        const href = titleEl?.getAttribute('href') || '';
-        const videoId = href.match(/\/video\/([a-zA-Z0-9_-]+)/)?.[1] || '';
-        const url = videoId ? `https://youtube.com/shorts/${videoId}` : '';
+        // Last-resort: longest leaf-node text that isn't a duration or plain number
+        if (!title) {
+          let best = '';
+          for (const el of deepAll(row, 'span, div')) {
+            if (el.childElementCount > 0) continue;
+            if (isInsideThumbnail(el)) continue;
+            const t = (el.textContent || '').trim();
+            if (!isDur(t) && !/^\d+$/.test(t) && t.length > best.length && t.length > 5) best = t;
+          }
+          title = best;
+        }
+
+        if (!title) continue;
+
+        // ── Stats: aria-label first, positional fallback ──────────────────
+        let views = '—', likes = '—', comments = '—';
+
+        for (const el of deepAll(row, '[aria-label]')) {
+          const label = (el.getAttribute('aria-label') || '').toLowerCase();
+          const numMatch = (el.textContent || '').trim().match(/[\d,.]+[KMBkmb]?/);
+          if (!numMatch) continue;
+          const val = numMatch[0].replace(/,/g, '');
+          if (/view/i.test(label) && views === '—') views = val;
+          else if (/like/i.test(label) && likes === '—') likes = val;
+          else if (/comment/i.test(label) && comments === '—') comments = val;
+        }
+
+        if (views === '—' || likes === '—' || comments === '—') {
+          const nums = [];
+          for (const cell of deepAll(row, 'td, [class*="stat"], ytcp-uploads-table-data-for-visibility')) {
+            const t = (cell.textContent || '').trim().replace(/,/g, '');
+            if (/^\d+(\.\d+)?[KMBkmb]?$/.test(t) && !isDur(t)) nums.push(t);
+          }
+          if (views === '—' && nums[0]) views = nums[0];
+          if (comments === '—' && nums[1]) comments = nums[1];
+          if (likes === '—' && nums[2]) likes = nums[2];
+        }
 
         results.push({
-          title,
-          url,
-          views: numbers[0] || '—',
-          comments: numbers[1] || '—',
-          likes: numbers[2] || '—',
-          rawNumbers: numbers,
-          ariaHints: ariaValues.slice(0, 5),
+          title: title.slice(0, 100),
+          url: `https://youtube.com/shorts/${videoId}`,
+          views,
+          likes,
+          comments,
         });
       }
       return results;
     }, maxVideos);
 
-    if (stats.length > 0) {
-      console.log(`[Stats] Found ${stats.length} YouTube videos (Studio)`);
-      return stats;
+    if (domStats.length > 0) {
+      console.log(`[Stats] Found ${domStats.length} YouTube videos (Studio DOM)`);
+      return domStats;
     }
 
-    // Studio table yielded nothing — fall back to public Shorts page
+    // ── STRATEGY 3: Public channel Shorts page ────────────────────────────
     return await scrapeYouTubeShortsPublic(page, maxVideos, channelHandle, studioChannelId);
   } catch (err) {
     console.error('[Stats] YouTube scrape error:', err.message);
@@ -123,8 +249,6 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
 
 async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '', channelId = '') {
   try {
-    // Build the public Shorts URL from available identifiers.
-    // Prefer the @handle format; fall back to channel ID; fall back to detecting from Studio.
     let shortsUrl = '';
 
     if (channelHandle) {
@@ -137,13 +261,11 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
       await page.waitForTimeout(2000);
 
       const detected = await page.evaluate(() => {
-        // @handle links in the Studio sidebar / header
         const links = Array.from(document.querySelectorAll('a[href*="youtube.com/@"], a[href*="/@"]'));
         for (const link of links) {
           const href = link.getAttribute('href') || '';
           if (href.startsWith('https://www.youtube.com/') || href.startsWith('https://studio.youtube.com/') || href.startsWith('/')) return href;
         }
-        // Numeric channel ID links
         const chanLinks = document.querySelectorAll('a[href*="youtube.com/channel/"], a[href*="/channel/UC"]');
         for (const link of chanLinks) {
           const href = link.getAttribute('href') || '';
@@ -165,29 +287,57 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
 
     console.log(`[Stats] Navigating to public Shorts page: ${shortsUrl}`);
     await page.goto(shortsUrl, { waitUntil: 'networkidle', timeout: 30000 });
-    await page.waitForTimeout(3000);
+    // Wait for video items to appear
+    await page.waitForSelector('ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(2000);
 
     const results = await page.evaluate((max) => {
+      function isDur(t) { return /^\d{1,2}:\d{2}(:\d{2})?$/.test((t || '').trim()); }
+
+      const seenIds = new Set();
+      const out = [];
+
       const items = document.querySelectorAll(
         'ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer, ytd-shorts-item-renderer'
       );
-      const out = [];
+
       for (const item of items) {
         if (out.length >= max) break;
-        const titleEl = item.querySelector('#video-title, a#video-title, h3 a, [id="video-title"]');
-        const title = (titleEl?.textContent || '').trim();
+
+        // Get the primary anchor (skip thumbnail overlays with duration text)
+        let titleEl = item.querySelector('a#video-title, h3 a#video-title');
+        if (!titleEl) {
+          // Try any anchor whose text is NOT a duration
+          for (const a of item.querySelectorAll('a[href*="/shorts/"], a[href*="/watch?"]')) {
+            const t = (a.textContent || '').trim();
+            if (t.length > 5 && !isDur(t)) { titleEl = a; break; }
+          }
+        }
+
+        const rawTitle = (titleEl?.textContent || item.querySelector('#video-title')?.textContent || '').trim();
+        const title = isDur(rawTitle) ? '' : rawTitle;
         if (!title) continue;
 
-        // Views are shown below the title on the public page
-        const viewsEl = item.querySelector(
-          '#metadata-line span, .inline-metadata-item, ytd-video-meta-block span, [class*="metadata"] span'
-        );
-        const views = (viewsEl?.textContent || '').trim();
+        // Extract video ID for dedup
+        const href = titleEl?.getAttribute('href') || item.querySelector('a[href*="/shorts/"], a[href*="/watch?"]')?.getAttribute('href') || '';
+        const shortId = href.match(/\/shorts\/([a-zA-Z0-9_-]+)/)?.[1] || href.match(/[?&]v=([a-zA-Z0-9_-]+)/)?.[1] || '';
+        if (shortId && seenIds.has(shortId)) continue;
+        if (shortId) seenIds.add(shortId);
 
-        const href = titleEl?.getAttribute('href') || item.querySelector('a')?.getAttribute('href') || '';
         const url = href.startsWith('http') ? href : href ? `https://www.youtube.com${href}` : '';
 
-        out.push({ title, url, views: views || '—', comments: '—', likes: '—' });
+        // Views: first metadata span that contains a view count
+        let views = '—';
+        const metaSpans = item.querySelectorAll('#metadata-line span, .inline-metadata-item, ytd-video-meta-block span, [class*="metadata"] span');
+        for (const span of metaSpans) {
+          const t = (span.textContent || '').trim();
+          if (/\d/.test(t) && (t.toLowerCase().includes('view') || /^\d[\d,.KMBkmb ]*$/i.test(t))) {
+            views = t.replace(/\s*views?/i, '').trim() || t;
+            break;
+          }
+        }
+
+        out.push({ title, url, views, comments: '—', likes: '—' });
       }
       return out;
     }, maxVideos);
@@ -334,13 +484,13 @@ function formatStatsForTelegram(platform, stats) {
 
   const sectionName = platform === 'YouTube' ? 'Shorts' : platform === 'Instagram' ? 'Reels' : 'Videos';
   let msg = `📊 <b>${platform} ${sectionName} (last ${stats.length})</b>\n\n`;
-  
+
   stats.forEach((v, i) => {
-    const title = (v.title || '(untitled)').slice(0, 50);
-    msg += `${i + 1}. ${title}\n`;
-    msg += `   👁 ${v.views}`;
-    if (v.likes !== '—') msg += ` | ❤️ ${v.likes}`;
-    if (v.comments !== '—') msg += ` | 💬 ${v.comments}`;
+    const rawTitle = (v.title || '(untitled)');
+    // Truncate at 60 chars (57 + '...')
+    const title = rawTitle.length > 60 ? rawTitle.slice(0, 57) + '...' : rawTitle;
+    msg += `${i + 1}. <b>${title}</b>\n`;
+    msg += `   👁 ${v.views} | ❤️ ${v.likes} | 💬 ${v.comments}`;
     msg += '\n';
     if (v.url) msg += `   🔗 ${v.url}\n`;
     msg += '\n';
