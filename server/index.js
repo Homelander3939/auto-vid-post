@@ -227,14 +227,28 @@ async function processJob(jobId, options = {}) {
       status: finalStatus, platform_results: results, completed_at: new Date().toISOString(),
     }).eq('id', jobId);
 
-    // === SEND FINAL TELEGRAM SUMMARY ===
+    // === SEND FINAL TELEGRAM SUMMARY WITH STATS ===
     const lines = results.map(r => {
       if (r.status === 'success') return `✅ ${r.name}: Success${r.url ? ' — ' + r.url : ''}`;
       if (r.status === 'error') return `❌ ${r.name}: ${r.error}`;
       return `⚪ ${r.name}: ${r.status}`;
     });
     const emoji = finalStatus === 'completed' ? '🎉' : finalStatus === 'partial' ? '⚠️' : '❌';
-    await notifyTelegram(settings, `${emoji} <b>Upload ${finalStatus}</b>\n📹 ${metadata.title || job.video_file_name}\n\n${lines.join('\n')}`);
+    let summaryMsg = `${emoji} <b>Upload ${finalStatus}</b>\n📹 ${metadata.title || job.video_file_name}\n\n${lines.join('\n')}`;
+
+    // Append stats from successful platforms
+    const statsLines = [];
+    for (const r of results) {
+      if (r.status === 'success' && r.recentStats?.length > 0) {
+        const platformName = r.name === 'youtube' ? 'YouTube' : r.name === 'tiktok' ? 'TikTok' : 'Instagram';
+        statsLines.push(formatStatsForTelegram(platformName, r.recentStats));
+      }
+    }
+    if (statsLines.length > 0) {
+      summaryMsg += '\n\n' + statsLines.join('\n\n');
+    }
+
+    await notifyTelegram(settings, summaryMsg);
 
     // Cleanup temp file
     if (job.video_storage_path && videoPath) {
