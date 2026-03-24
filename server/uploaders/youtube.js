@@ -248,6 +248,13 @@ async function assessYouTubePostPublishState(page) {
       text.includes('checks complete') ||
       text.includes('no issues found') ||
       text.includes('uploaded and is being processed');
+    // File transfer still in progress — not an obstacle, just needs more time
+    const isStillUploading =
+      text.includes('video uploading') ||
+      text.includes('still uploading') ||
+      text.includes('uploading and will be public') ||
+      text.includes('keep this browser tab open until uploading') ||
+      /uploading\s+\d+\s*%/.test(text);
     const hasHardError =
       text.includes('copyright claim') ||
       text.includes('blocked in') ||
@@ -257,10 +264,11 @@ async function assessYouTubePostPublishState(page) {
     return {
       hasPublished,
       hasProcessing,
+      isStillUploading,
       hasHardError,
       summary: text.slice(0, 1200),
     };
-  }).catch(() => ({ hasPublished: false, hasProcessing: false, hasHardError: false, summary: '' }));
+  }).catch(() => ({ hasPublished: false, hasProcessing: false, isStillUploading: false, hasHardError: false, summary: '' }));
 
   if (dom.hasPublished || dom.hasProcessing) {
     return {
@@ -268,6 +276,15 @@ async function assessYouTubePostPublishState(page) {
       reason: dom.hasPublished
         ? 'YouTube shows a published confirmation.'
         : 'YouTube shows processing/checks complete, which means upload finished and processing continues server-side.',
+    };
+  }
+
+  // File is still being transferred — not an obstacle, caller should wait
+  if (dom.isStillUploading) {
+    return {
+      successLike: false,
+      isUploading: true,
+      reason: 'Video upload is still in progress. Waiting for the file transfer to complete before checking for confirmation.',
     };
   }
 
@@ -391,7 +408,8 @@ async function waitForPublishConfirmation(page, timeoutMs = 15000) {
         text.includes('your video is uploaded') ||
         text.includes('video processing') ||
         text.includes('finish processing before your video is public') ||
-        text.includes('no issues found')
+        text.includes('no issues found') ||
+        text.includes('uploaded and is being processed')
       );
     }).catch(() => false);
 
@@ -399,6 +417,62 @@ async function waitForPublishConfirmation(page, timeoutMs = 15000) {
     await page.waitForTimeout(1000);
   }
   return false;
+}
+
+// Detects if the "Video uploading" progress dialog is currently shown.
+// YouTube shows this while the file is still being transferred (e.g. "Uploading 32% … 2 minutes left").
+async function isVideoUploadInProgress(page) {
+  return page.evaluate(() => {
+    const text = (document.body?.innerText || '').toLowerCase();
+    return (
+      text.includes('video uploading') ||
+      text.includes('still uploading') ||
+      text.includes('uploading and will be public') ||
+      text.includes('keep this browser tab open until uploading') ||
+      /uploading\s+\d+\s*%/.test(text)
+    );
+  }).catch(() => false);
+}
+
+// Waits (up to maxWaitMs, default 10 min) for the upload progress dialog to clear
+// and a success/processing confirmation to appear. Polls every 20 s so it doesn't
+// overwhelm YouTube Studio with unnecessary checks.
+async function waitForVideoUploadToComplete(page, maxWaitMs = 600000) {
+  const started = Date.now();
+  console.log('[YouTube] Video upload in progress — waiting for it to complete (up to 10 minutes)...');
+
+  while (Date.now() - started < maxWaitMs) {
+    const elapsed = Math.round((Date.now() - started) / 1000);
+
+    // Check for a final success/processing state first
+    const confirmed = await waitForPublishConfirmation(page, 3000);
+    if (confirmed) {
+      console.log(`[YouTube] Upload & processing confirmed after ${elapsed}s`);
+      return true;
+    }
+
+    // Still uploading?
+    const stillUploading = await isVideoUploadInProgress(page);
+    if (stillUploading) {
+      const progressText = await page.evaluate(() => {
+        // Try to grab the percentage / time-remaining line from the dialog
+        const dialog = document.querySelector(
+          'ytcp-uploads-still-processing-modal, [class*="upload-progress"], ytcp-video-upload-progress, .ytcp-upload-progress'
+        );
+        return (dialog?.innerText || '').trim().slice(0, 120);
+      }).catch(() => '');
+      console.log(`[YouTube] Still uploading... (${elapsed}s elapsed)${progressText ? ' — ' + progressText : ''}`);
+      await page.waitForTimeout(20000);
+      continue;
+    }
+
+    // Dialog gone but no confirmation yet — give it a few more seconds
+    await page.waitForTimeout(5000);
+    break;
+  }
+
+  // One final generous confirmation check
+  return waitForPublishConfirmation(page, 20000);
 }
 
 async function extractPublishedVideoUrl(page) {
@@ -887,21 +961,40 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     await page.waitForTimeout(6000);
     cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
 
-    let publishConfirmed = await waitForPublishConfirmation(page, 12000);
+    // Check immediately whether the file is still transferring.
+    // If so, wait patiently (up to 10 min) instead of escalating to human help.
+    if (await isVideoUploadInProgress(page)) {
+      console.log('[YouTube] Upload dialog detected — waiting for file transfer to finish before checking confirmation...');
+      await waitForVideoUploadToComplete(page);
+    }
+
+    let publishConfirmed = await waitForPublishConfirmation(page, 30000);
     if (!publishConfirmed) {
       const postPublish = await assessYouTubePostPublishState(page);
       if (postPublish.successLike) {
         publishConfirmed = true;
-      } else {
-        await requestHumanObstacleHelp(
-          page,
-          credentials,
-          `Publish confirmation was not clearly detected. ${postPublish.reason}\nIf YouTube still needs a final action, complete it and reply APPROVED.`
-        );
-        publishConfirmed = await waitForPublishConfirmation(page, 15000);
-        if (!publishConfirmed) {
-          const secondCheck = await assessYouTubePostPublishState(page);
-          publishConfirmed = secondCheck.successLike;
+      } else if (postPublish.isUploading) {
+        // Still uploading — give it another long wait before escalating
+        console.log('[YouTube] Upload still in progress after initial checks — waiting up to 10 more minutes...');
+        publishConfirmed = await waitForVideoUploadToComplete(page);
+      }
+
+      if (!publishConfirmed) {
+        // Re-evaluate after any waiting above
+        const finalCheck = await assessYouTubePostPublishState(page);
+        if (finalCheck.successLike) {
+          publishConfirmed = true;
+        } else {
+          await requestHumanObstacleHelp(
+            page,
+            credentials,
+            `Publish confirmation was not clearly detected. ${finalCheck.reason}\nIf YouTube still needs a final action, complete it and reply APPROVED.`
+          );
+          publishConfirmed = await waitForPublishConfirmation(page, 15000);
+          if (!publishConfirmed) {
+            const secondCheck = await assessYouTubePostPublishState(page);
+            publishConfirmed = secondCheck.successLike;
+          }
         }
       }
     }

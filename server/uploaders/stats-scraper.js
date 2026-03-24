@@ -9,74 +9,84 @@ const fs = require('fs');
 async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
   console.log('[Stats] Scraping YouTube Shorts stats...');
   try {
-    // Navigate to YouTube Studio content page filtered to Shorts
-    await page.goto('https://studio.youtube.com/channel/UC/videos/short', { waitUntil: 'networkidle', timeout: 30000 }).catch(async () => {
-      // Fallback: go to content page and filter
-      await page.goto('https://studio.youtube.com/channel/UC/videos/upload', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
-    });
-    await page.waitForTimeout(3000);
+    // Navigate to YouTube Studio and resolve the real channel ID from the URL.
+    // (The placeholder "/channel/UC" does not work — we need the actual ID.)
+    await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(2000);
 
-    // If the filtered URL didn't work, try the main content page
-    const currentUrl = page.url();
-    if (!currentUrl.includes('studio.youtube.com')) {
-      await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 30000 });
+    // Extract the channel ID from the Studio URL (format: /channel/UCXXXXXXX)
+    const studioChannelId = await page.evaluate(() => {
+      const m = window.location.href.match(/\/channel\/(UC[a-zA-Z0-9_-]+)/);
+      return m ? m[1] : '';
+    }).catch(() => '');
+
+    // Also grab the handle/vanity URL for the public Shorts page fallback
+    const channelHandle = await page.evaluate(() => {
+      // Look for the @handle link in the Studio sidebar or header
+      const links = Array.from(document.querySelectorAll('a[href*="youtube.com/@"], a[href*="/@"]'));
+      for (const link of links) {
+        const href = link.getAttribute('href') || '';
+        const m = href.match(/\/@([^/?&]+)/);
+        if (m) return '@' + m[1];
+      }
+      return '';
+    }).catch(() => '');
+
+    if (studioChannelId) {
+      // Navigate to the Studio content page filtered to Shorts
+      await page.goto(
+        `https://studio.youtube.com/channel/${studioChannelId}/videos?filter=%5B%7B%22name%22%3A%22VIDEO_TYPE%22%2C%22value%22%3A%22VIDEO_TYPE_SHORT%22%7D%5D`,
+        { waitUntil: 'networkidle', timeout: 30000 }
+      ).catch(async () => {
+        // Fallback: plain content page
+        await page.goto(`https://studio.youtube.com/channel/${studioChannelId}/videos`, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+      });
+      await page.waitForTimeout(3000);
+
+      // Try to click "Shorts" tab if available
+      await page.evaluate(() => {
+        const tabs = document.querySelectorAll('[role="tab"], tp-yt-paper-tab, a');
+        for (const tab of tabs) {
+          const text = (tab.textContent || '').toLowerCase().trim();
+          if (text === 'shorts') { tab.click(); return true; }
+        }
+        return false;
+      });
       await page.waitForTimeout(2000);
-      // Click Content in sidebar
+    } else {
+      // No channel ID found in URL — fall back to content page via sidebar click
       await page.evaluate(() => {
         const links = document.querySelectorAll('a, [role="tab"], tp-yt-paper-tab');
         for (const link of links) {
           const text = (link.textContent || '').toLowerCase();
-          if (text.includes('content') || text.includes('videos')) {
-            link.click();
-            return true;
-          }
+          if (text.includes('content') || text.includes('videos')) { link.click(); return true; }
         }
         return false;
       });
       await page.waitForTimeout(3000);
     }
 
-    // Try to click "Shorts" tab if available
-    await page.evaluate(() => {
-      const tabs = document.querySelectorAll('[role="tab"], tp-yt-paper-tab, a');
-      for (const tab of tabs) {
-        const text = (tab.textContent || '').toLowerCase().trim();
-        if (text === 'shorts') {
-          tab.click();
-          return true;
-        }
-      }
-      return false;
-    });
-    await page.waitForTimeout(2000);
-
     // Extract stats from the video list table
     const stats = await page.evaluate((max) => {
       const results = [];
-      // YouTube Studio uses a table with rows for each video
       const rows = document.querySelectorAll('ytcp-video-row, tr.video-row, [class*="video-row"], table tbody tr');
-      
+
       for (const row of rows) {
         if (results.length >= max) break;
-        
+
         const titleEl = row.querySelector('a#video-title, [id="video-title"], .video-title, a[href*="/video/"]');
         const title = (titleEl?.textContent || '').trim();
         if (!title) continue;
 
-        // Extract metrics - YouTube Studio shows views, comments, likes in columns
         const cells = row.querySelectorAll('td, .cell-content, [class*="cell"]');
         const allText = Array.from(cells).map(c => (c.textContent || '').trim());
-        
-        // Try to find numeric values that represent views, comments, likes
+
         const numbers = [];
         for (const cellText of allText) {
           const cleaned = cellText.replace(/[,\s]/g, '');
-          if (/^\d+(\.\d+)?[KMBkmb]?$/.test(cleaned)) {
-            numbers.push(cellText.trim());
-          }
+          if (/^\d+(\.\d+)?[KMBkmb]?$/.test(cleaned)) numbers.push(cellText.trim());
         }
 
-        // Also try aria-labels or tooltips which often have exact counts
         const ariaValues = Array.from(row.querySelectorAll('[aria-label]'))
           .map(el => el.getAttribute('aria-label') || '')
           .filter(v => /\d/.test(v));
@@ -98,69 +108,92 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
       return results;
     }, maxVideos);
 
-    // If Studio table didn't yield results, try the public channel page
-    if (stats.length === 0) {
-      return await scrapeYouTubeShortsPublic(page, maxVideos);
+    if (stats.length > 0) {
+      console.log(`[Stats] Found ${stats.length} YouTube videos (Studio)`);
+      return stats;
     }
 
-    console.log(`[Stats] Found ${stats.length} YouTube videos`);
-    return stats;
+    // Studio table yielded nothing — fall back to public Shorts page
+    return await scrapeYouTubeShortsPublic(page, maxVideos, channelHandle, studioChannelId);
   } catch (err) {
     console.error('[Stats] YouTube scrape error:', err.message);
     return [];
   }
 }
 
-async function scrapeYouTubeShortsPublic(page, maxVideos = 10) {
+async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '', channelId = '') {
   try {
-    // Try navigating to channel's Shorts tab via YouTube (not Studio)
-    // First get the channel URL from Studio
-    await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 20000 });
-    await page.waitForTimeout(2000);
+    // Build the public Shorts URL from available identifiers.
+    // Prefer the @handle format; fall back to channel ID; fall back to detecting from Studio.
+    let shortsUrl = '';
 
-    const channelUrl = await page.evaluate(() => {
-      // Look for channel link in Studio
-      const links = document.querySelectorAll('a[href*="youtube.com/channel/"], a[href*="youtube.com/@"]');
-      for (const link of links) {
-        const href = link.getAttribute('href') || '';
-        if (href.includes('youtube.com')) return href;
-      }
-      // Try getting from avatar/profile area
-      const avatar = document.querySelector('#avatar-btn, .channel-header a, a[href*="/@"]');
-      return avatar?.getAttribute('href') || '';
-    });
+    if (channelHandle) {
+      shortsUrl = `https://www.youtube.com/${channelHandle}/shorts`;
+    } else if (channelId) {
+      shortsUrl = `https://www.youtube.com/channel/${channelId}/shorts`;
+    } else {
+      // Last resort: navigate to Studio and pick up the channel link from the page
+      await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 20000 });
+      await page.waitForTimeout(2000);
 
-    if (channelUrl) {
-      const shortsUrl = channelUrl.replace(/\/?$/, '/shorts');
-      await page.goto(shortsUrl.startsWith('http') ? shortsUrl : `https://www.youtube.com${shortsUrl}`, {
-        waitUntil: 'networkidle',
-        timeout: 20000,
-      });
-      await page.waitForTimeout(3000);
-
-      return await page.evaluate((max) => {
-        const results = [];
-        const items = document.querySelectorAll('ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer');
-        
-        for (const item of items) {
-          if (results.length >= max) break;
-          const titleEl = item.querySelector('#video-title, a#video-title, h3 a, [id="video-title"]');
-          const title = (titleEl?.textContent || '').trim();
-          if (!title) continue;
-
-          const viewsEl = item.querySelector('#metadata-line span, .inline-metadata-item, ytd-video-meta-block span');
-          const views = (viewsEl?.textContent || '').trim();
-
-          const href = (titleEl?.getAttribute('href') || item.querySelector('a')?.getAttribute('href') || '');
-          const url = href.startsWith('http') ? href : href ? `https://www.youtube.com${href}` : '';
-
-          results.push({ title, url, views: views || '—', comments: '—', likes: '—' });
+      const detected = await page.evaluate(() => {
+        // @handle links in the Studio sidebar / header
+        const links = Array.from(document.querySelectorAll('a[href*="youtube.com/@"], a[href*="/@"]'));
+        for (const link of links) {
+          const href = link.getAttribute('href') || '';
+          if (href.startsWith('https://www.youtube.com/') || href.startsWith('https://studio.youtube.com/') || href.startsWith('/')) return href;
         }
-        return results;
-      }, maxVideos);
+        // Numeric channel ID links
+        const chanLinks = document.querySelectorAll('a[href*="youtube.com/channel/"], a[href*="/channel/UC"]');
+        for (const link of chanLinks) {
+          const href = link.getAttribute('href') || '';
+          if (href) return href;
+        }
+        return '';
+      });
+
+      if (detected) {
+        const base = detected.startsWith('http') ? detected : `https://www.youtube.com${detected}`;
+        shortsUrl = base.replace(/\/?$/, '/shorts');
+      }
     }
 
-    return [];
+    if (!shortsUrl) {
+      console.warn('[Stats] Could not determine channel URL for public Shorts page');
+      return [];
+    }
+
+    console.log(`[Stats] Navigating to public Shorts page: ${shortsUrl}`);
+    await page.goto(shortsUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.waitForTimeout(3000);
+
+    const results = await page.evaluate((max) => {
+      const items = document.querySelectorAll(
+        'ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer, ytd-shorts-item-renderer'
+      );
+      const out = [];
+      for (const item of items) {
+        if (out.length >= max) break;
+        const titleEl = item.querySelector('#video-title, a#video-title, h3 a, [id="video-title"]');
+        const title = (titleEl?.textContent || '').trim();
+        if (!title) continue;
+
+        // Views are shown below the title on the public page
+        const viewsEl = item.querySelector(
+          '#metadata-line span, .inline-metadata-item, ytd-video-meta-block span, [class*="metadata"] span'
+        );
+        const views = (viewsEl?.textContent || '').trim();
+
+        const href = titleEl?.getAttribute('href') || item.querySelector('a')?.getAttribute('href') || '';
+        const url = href.startsWith('http') ? href : href ? `https://www.youtube.com${href}` : '';
+
+        out.push({ title, url, views: views || '—', comments: '—', likes: '—' });
+      }
+      return out;
+    }, maxVideos);
+
+    console.log(`[Stats] Found ${results.length} YouTube videos (public Shorts page)`);
+    return results;
   } catch (err) {
     console.error('[Stats] YouTube public scrape error:', err.message);
     return [];
