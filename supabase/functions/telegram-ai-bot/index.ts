@@ -79,6 +79,80 @@ const tools = [
       parameters: { type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'] },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'clear_jobs_by_status',
+      description: 'Delete all upload jobs with a given status (e.g. "failed", "completed", "pending") or "all" to clear everything.',
+      parameters: { type: 'object', properties: { status: { type: 'string', description: 'Job status to clear, or "all"' } }, required: ['status'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_upload_job',
+      description: 'Edit an upload job title, description, tags, or target platforms.',
+      parameters: {
+        type: 'object',
+        properties: {
+          job_id: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+        },
+        required: ['job_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_scheduled_upload',
+      description: 'Delete/cancel a scheduled upload by ID.',
+      parameters: { type: 'object', properties: { scheduled_id: { type: 'string' } }, required: ['scheduled_id'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_scheduled_upload',
+      description: 'Edit a scheduled upload title, description, tags, platforms, or scheduled_at time.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scheduled_id: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          scheduled_at: { type: 'string' },
+        },
+        required: ['scheduled_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'manage_recurring_schedule',
+      description: 'Create, update, or delete a recurring schedule. Use action "create", "update", or "delete".',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['create', 'update', 'delete'] },
+          schedule_id: { type: 'number', description: 'Required for update/delete' },
+          name: { type: 'string' },
+          enabled: { type: 'boolean' },
+          cron_expression: { type: 'string' },
+          platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          folder_path: { type: 'string' },
+          end_at: { type: 'string', description: 'ISO date when schedule should stop' },
+        },
+        required: ['action'],
+      },
+    },
+  },
 ];
 
 async function executeTool(supabase: any, name: string, args: any): Promise<string> {
