@@ -1,6 +1,27 @@
 // Smart browser agent helper for local Playwright uploaders.
 // Takes screenshots, analyzes page state with AI, and decides next action.
 // This gives the local server the same intelligence as the cloud version.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// Agentic capabilities (page-agent-style, adapted for server-side Playwright)
+// ─────────────────────────────────────────────────────────────────────────────
+// page-agent (https://github.com/alibaba/page-agent) is a *client-side*
+// library designed to run inside browser JavaScript context.  It cannot be
+// used directly here because our automation runs from a Node.js server that
+// controls Chromium through Playwright's remote protocol.
+//
+// Instead we implement the same core concept natively:
+//   1. extractPageContext() – lightweight, text-based DOM snapshot (no screenshot
+//      required, mirrors page-agent's DOM-first approach).
+//   2. planNextAction()     – sends context + natural-language goal to the LLM
+//      and receives a concrete Playwright action to execute.
+//   3. executeAgentAction() – executes the LLM-chosen action via Playwright.
+//   4. runAgentTask()       – iterative plan → execute loop until goal is
+//      reached, failed, or the maximum step budget is exhausted.
+//
+// All four functions are exported and can be used directly by the uploaders
+// (youtube.js, tiktok.js, instagram.js) for complex sequences that are hard
+// to hard-code, or from any new agentic flow.
 
 const fetch = require('node-fetch');
 const fs = require('fs');
@@ -230,6 +251,369 @@ async function smartFill(page, selectors, value) {
   return false;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENTIC LOOP  (page-agent concept adapted for server-side Playwright)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Configuration constants for the agentic loop
+const MAX_BODY_TEXT_LENGTH = 1500;
+const MAX_INTERACTIVE_ELEMENTS = 60;
+const SELECTOR_WAIT_TIMEOUT = 5000;
+
+/**
+ * Extract a lightweight, text-based snapshot of the page that can be sent to
+ * an LLM without a screenshot.  The snapshot includes:
+ *  - Current URL and page title
+ *  - All interactive elements (buttons, inputs, selects, links, contenteditable)
+ *    with their text, aria-label, name, id, type, placeholder, href attributes
+ *  - First 1,500 characters of visible body text
+ *
+ * This mirrors page-agent's "DOM-first, no multi-modal" philosophy and keeps
+ * token counts low while giving the model enough context to decide what to do.
+ *
+ * @param {import('playwright').Page} page
+ * @returns {Promise<{url:string, title:string, interactive:object[], bodyText:string}>}
+ */
+async function extractPageContext(page) {
+  const url = page.url();
+  const title = await page.title().catch(() => '');
+
+  const interactive = await page.evaluate((maxBodyLen) => {
+    const TAG_SELECTORS = [
+      'button',
+      'input:not([type="hidden"])',
+      'select',
+      'textarea',
+      'a[href]',
+      '[role="button"]',
+      '[role="link"]',
+      '[role="menuitem"]',
+      '[role="option"]',
+      '[role="tab"]',
+      '[contenteditable="true"]',
+      '[contenteditable=""]',
+    ].join(',');
+
+    /**
+     * Return a stable CSS selector for an element so the agent can click/fill it.
+     * Prefers id, then name, then aria-label, then nth-of-type index.
+     */
+    function selectorFor(el) {
+      const tag = el.tagName.toLowerCase();
+      if (el.id) return `#${CSS.escape(el.id)}`;
+      if (el.name) return `${tag}[name="${el.name}"]`;
+      const label = el.getAttribute('aria-label');
+      if (label) return `${tag}[aria-label="${label}"]`;
+      // Fallback: position-based selector within parent
+      const parent = el.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.querySelectorAll(tag));
+        const idx = siblings.indexOf(el) + 1;
+        return `${tag}:nth-of-type(${idx})`;
+      }
+      return tag;
+    }
+
+    const elements = [];
+    const seen = new Set();
+    document.querySelectorAll(TAG_SELECTORS).forEach((el) => {
+      const rect = el.getBoundingClientRect();
+      const visible = rect.width > 0 && rect.height > 0 &&
+        window.getComputedStyle(el).visibility !== 'hidden' &&
+        window.getComputedStyle(el).display !== 'none';
+      if (!visible) return;
+
+      const sel = selectorFor(el);
+      if (seen.has(sel)) return;
+      seen.add(sel);
+
+      const obj = {
+        tag: el.tagName.toLowerCase(),
+        selector: sel,
+        text: (el.textContent || '').trim().substring(0, 80),
+        type: el.getAttribute('type') || null,
+        placeholder: el.getAttribute('placeholder') || null,
+        ariaLabel: el.getAttribute('aria-label') || null,
+        href: el.getAttribute('href') || null,
+        role: el.getAttribute('role') || null,
+        disabled: el.disabled || false,
+      };
+      elements.push(obj);
+    });
+
+    const bodyText = (document.body?.innerText || '').substring(0, maxBodyLen);
+    return { interactive: elements, bodyText };
+  }, MAX_BODY_TEXT_LENGTH).catch(() => ({ interactive: [], bodyText: '' }));
+
+  return {
+    url,
+    title,
+    interactive: interactive.interactive,
+    bodyText: interactive.bodyText,
+  };
+}
+
+/**
+ * Ask the LLM for the single best next Playwright action to advance toward
+ * `goal`, given the current page context and the history of prior steps.
+ *
+ * The LLM returns a structured action object:
+ * {
+ *   action:    "click" | "fill" | "select" | "navigate" | "scroll" | "wait" | "done" | "failed",
+ *   selector:  string | null,   // CSS selector (for click/fill/select)
+ *   value:     string | null,   // text to type (fill) or option value (select)
+ *   url:       string | null,   // destination URL (navigate)
+ *   direction: "up" | "down",   // scroll direction
+ *   amount:    number,          // pixels to scroll
+ *   ms:        number,          // milliseconds to wait
+ *   reason:    string,          // brief explanation
+ *   goalReached: boolean        // true if the goal is already achieved
+ * }
+ *
+ * @param {import('playwright').Page} page
+ * @param {string} goal
+ * @param {object[]} history   Previous action objects (for loop-prevention)
+ * @param {{ useVision?: boolean }} [opts]
+ * @returns {Promise<object>}
+ */
+async function planNextAction(page, goal, history = [], opts = {}) {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    // No API key – return a no-op "failed" action so callers can handle it.
+    return { action: 'failed', reason: 'No LOVABLE_API_KEY set', goalReached: false };
+  }
+
+  const ctx = await extractPageContext(page);
+
+  // Trim history to last 10 steps to keep prompts manageable
+  const recentHistory = history.slice(-10).map((h, i) => `  Step ${i + 1}: ${h.action} → ${h.reason || ''}`).join('\n');
+
+  const systemPrompt = `You are a Playwright browser automation agent.
+Your job is to advance toward the following goal by choosing ONE action per turn.
+
+GOAL: ${goal}
+
+PAGE CONTEXT
+  URL   : ${ctx.url}
+  Title : ${ctx.title}
+  Body (truncated): ${ctx.bodyText}
+
+INTERACTIVE ELEMENTS (visible only):
+${ctx.interactive.slice(0, MAX_INTERACTIVE_ELEMENTS).map(e =>
+    `  [${e.tag}] selector="${e.selector}" text="${e.text}" type="${e.type}" placeholder="${e.placeholder}" ariaLabel="${e.ariaLabel}"`
+  ).join('\n')}
+
+PREVIOUS STEPS:
+${recentHistory || '  (none yet)'}
+
+Respond with a JSON object and nothing else:
+{
+  "action":    "click|fill|select|navigate|scroll|wait|done|failed",
+  "selector":  "<CSS selector or null>",
+  "value":     "<text to type or option value, or null>",
+  "url":       "<full URL for navigate, or null>",
+  "direction": "up|down",
+  "amount":    300,
+  "ms":        1000,
+  "reason":    "<one-sentence explanation>",
+  "goalReached": false
+}
+
+Rules:
+- Use "done" when you are confident the goal has been fully achieved.
+- Use "failed" only when no progress is possible (e.g., captcha, blocked).
+- Prefer selectors from the INTERACTIVE ELEMENTS list above.
+- Never repeat the exact same action twice in a row.`;
+
+  const userMessages = [{ type: 'text', text: 'What is the next action?' }];
+
+  if (opts.useVision) {
+    const screenshot = await takeScreenshot(page);
+    userMessages.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${screenshot}` } });
+  }
+
+  try {
+    const response = await fetch(LOVABLE_AI_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'google/gemini-2.5-flash',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessages },
+        ],
+        max_tokens: 400,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('[SmartAgent] planNextAction API error:', response.status);
+      return { action: 'failed', reason: `API error ${response.status}`, goalReached: false };
+    }
+
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return parsed;
+    }
+  } catch (err) {
+    console.error('[SmartAgent] planNextAction error:', err.message);
+  }
+
+  return { action: 'failed', reason: 'Could not parse LLM response', goalReached: false };
+}
+
+/**
+ * Execute a single agent action returned by `planNextAction`.
+ *
+ * @param {import('playwright').Page} page
+ * @param {object} action  Action object from planNextAction
+ * @returns {Promise<boolean>}  true if the action was applied successfully
+ */
+async function executeAgentAction(page, action) {
+  const { action: type, selector, value, url, direction, amount, ms } = action;
+
+  try {
+    switch (type) {
+      case 'click': {
+        if (!selector) return false;
+        await page.waitForSelector(selector, { timeout: SELECTOR_WAIT_TIMEOUT, state: 'visible' }).catch(() => {});
+        const el = await page.$(selector);
+        if (!el) {
+          // Fallback: try text-based click using action.value or action.reason
+          const fallbackText = value || '';
+          return smartClick(page, [selector], fallbackText);
+        }
+        await el.click();
+        return true;
+      }
+      case 'fill': {
+        if (!selector) return false;
+        await page.waitForSelector(selector, { timeout: SELECTOR_WAIT_TIMEOUT, state: 'visible' }).catch(() => {});
+        return smartFill(page, [selector], value || '');
+      }
+      case 'select': {
+        if (!selector || !value) return false;
+        await page.selectOption(selector, value);
+        return true;
+      }
+      case 'navigate': {
+        if (!url) return false;
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        return true;
+      }
+      case 'scroll': {
+        const px = amount || 300;
+        const sign = direction === 'up' ? -1 : 1;
+        await page.evaluate((delta) => window.scrollBy(0, delta), sign * px);
+        return true;
+      }
+      case 'wait': {
+        await page.waitForTimeout(ms || 1000);
+        return true;
+      }
+      case 'done':
+      case 'failed':
+        return true; // Caller checks action.action to decide whether to stop
+      default:
+        console.warn('[SmartAgent] Unknown action type:', type);
+        return false;
+    }
+  } catch (err) {
+    console.warn(`[SmartAgent] executeAgentAction(${type}) error:`, err.message);
+    return false;
+  }
+}
+
+/**
+ * Run a full agentic task loop:  plan → execute → repeat until the goal is
+ * reached, a "failed"/"done" action is returned, or the step budget runs out.
+ *
+ * This is the equivalent of page-agent's `agent.execute()` method, adapted for
+ * server-side Playwright where we control the browser externally rather than
+ * injecting scripts into the page.
+ *
+ * @example
+ * const { success, steps } = await runAgentTask(page,
+ *   'Log in to YouTube Studio using the stored session, then click Upload');
+ *
+ * @param {import('playwright').Page} page
+ * @param {string} goal          Natural-language description of the desired outcome
+ * @param {object} [options]
+ * @param {number}  [options.maxSteps=15]     Maximum plan→execute iterations
+ * @param {number}  [options.stepDelayMs=800] Pause between steps (ms)
+ * @param {boolean} [options.useVision=false] Attach screenshot to each LLM call
+ * @param {boolean} [options.verbose=true]    Log each step to console
+ * @returns {Promise<{success:boolean, steps:object[], finalState:string}>}
+ */
+async function runAgentTask(page, goal, options = {}) {
+  const {
+    maxSteps = 15,
+    stepDelayMs = 800,
+    useVision = false,
+    verbose = true,
+  } = options;
+
+  const history = [];
+  let success = false;
+  let finalState = 'incomplete';
+
+  if (verbose) console.log(`[AgentTask] Goal: "${goal}"`);
+
+  for (let step = 1; step <= maxSteps; step++) {
+    // Give the page a moment to settle before planning
+    await page.waitForTimeout(stepDelayMs).catch(() => {});
+
+    let action;
+    try {
+      action = await planNextAction(page, goal, history, { useVision });
+    } catch (err) {
+      console.error('[AgentTask] planNextAction threw:', err.message);
+      finalState = 'error';
+      break;
+    }
+
+    if (verbose) {
+      console.log(`[AgentTask] Step ${step}/${maxSteps}: ${action.action}` +
+        (action.selector ? ` selector="${action.selector}"` : '') +
+        (action.value ? ` value="${action.value}"` : '') +
+        (action.url ? ` url="${action.url}"` : '') +
+        ` | ${action.reason || ''}`);
+    }
+
+    history.push({ ...action, step });
+
+    if (action.action === 'done' || action.goalReached) {
+      success = true;
+      finalState = 'done';
+      if (verbose) console.log('[AgentTask] Goal reached!');
+      break;
+    }
+
+    if (action.action === 'failed') {
+      finalState = 'failed';
+      if (verbose) console.log('[AgentTask] Agent reported failure:', action.reason);
+      break;
+    }
+
+    const ok = await executeAgentAction(page, action);
+    if (!ok) {
+      if (verbose) console.warn(`[AgentTask] Step ${step} action could not be executed, continuing…`);
+    }
+  }
+
+  if (finalState === 'incomplete') {
+    if (verbose) console.warn(`[AgentTask] Step budget (${maxSteps}) exhausted without completion.`);
+  }
+
+  return { success, steps: history, finalState };
+}
+
 module.exports = {
   takeScreenshot,
   analyzePage,
@@ -238,4 +622,9 @@ module.exports = {
   smartClick,
   smartFill,
   getApiKey,
+  // Agentic loop API
+  extractPageContext,
+  planNextAction,
+  executeAgentAction,
+  runAgentTask,
 };
