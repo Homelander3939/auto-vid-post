@@ -153,6 +153,20 @@ const tools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'check_platform_stats',
+      description: 'Check video stats (views, likes, comments) for a platform. Opens browser, logs in, scrapes recent video stats. Use "all" to check all configured platforms.',
+      parameters: {
+        type: 'object',
+        properties: {
+          platform: { type: 'string', enum: ['youtube', 'tiktok', 'instagram', 'all'], description: 'Platform to check stats for, or "all"' },
+        },
+        required: ['platform'],
+      },
+    },
+  },
 ];
 
 async function executeTool(supabase: any, name: string, args: any): Promise<string> {
