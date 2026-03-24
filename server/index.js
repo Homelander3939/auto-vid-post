@@ -7,6 +7,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { uploadToYouTube } = require('./uploaders/youtube');
 const { uploadToTikTok } = require('./uploaders/tiktok');
 const { uploadToInstagram } = require('./uploaders/instagram');
+const { checkPlatformStats, formatStatsForTelegram } = require('./uploaders/stats-scraper');
 const { sendTelegram } = require('./telegram');
 const { scanFolder } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
