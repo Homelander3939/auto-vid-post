@@ -27,11 +27,22 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 
-const LOVABLE_AI_URL = 'https://ai.gateway.lovable.dev/v1/chat/completions';
+// LM Studio local model configuration
+// Override with env vars: LM_STUDIO_URL, LM_STUDIO_MODEL, LM_STUDIO_API_KEY
+const DEFAULT_LM_STUDIO_URL = 'http://localhost:1234';
+const DEFAULT_LM_STUDIO_MODEL = 'google/gemma-3-27b';
 
-// Get the API key from env or fall back to the Supabase edge function
+function getLmStudioUrl() {
+  return (process.env.LM_STUDIO_URL || DEFAULT_LM_STUDIO_URL).replace(/\/$/, '') + '/v1/chat/completions';
+}
+
+function getLmStudioModel() {
+  return process.env.LM_STUDIO_MODEL || DEFAULT_LM_STUDIO_MODEL;
+}
+
+// LM Studio does not require authentication; key is optional
 function getApiKey() {
-  return process.env.LOVABLE_API_KEY || null;
+  return process.env.LM_STUDIO_API_KEY || process.env.LOVABLE_API_KEY || 'lm-studio';
 }
 
 /**
@@ -43,76 +54,74 @@ async function takeScreenshot(page) {
 }
 
 /**
- * Analyze the current page state using AI vision
+ * Analyze the current page state using LM Studio AI
  */
 async function analyzePage(page, context) {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    console.log('[SmartAgent] No LOVABLE_API_KEY, falling back to DOM analysis');
-    return analyzeDOMOnly(page, context);
-  }
-
-  const screenshot = await takeScreenshot(page);
   const url = page.url();
   const title = await page.title();
 
-  const response = await fetch(LOVABLE_AI_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'google/gemini-2.5-flash',
-      messages: [
-        {
-          role: 'system',
-          content: `You are a browser automation expert. Analyze the screenshot and tell me:
-1. What page/state is the browser showing?
-2. Is there a login form, verification challenge, error, or success state?
-3. What is the single best next action to take?
+  // Build page context using DOM text (LM Studio text model, no vision)
+  const ctx = await extractPageContext(page).catch(() => ({ url, title, interactive: [], bodyText: '' }));
+  const interactiveSummary = ctx.interactive.slice(0, 40)
+    .map(e => `  [${e.tag}] selector="${e.selector}" text="${e.text}"`)
+    .join('\n');
+
+  try {
+    const response = await fetch(getLmStudioUrl(), {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${getApiKey()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: getLmStudioModel(),
+        messages: [
+          {
+            role: 'system',
+            content: `You are a browser automation expert. Analyze the page DOM and tell me the current state.
 
 Context: ${context}
 Current URL: ${url}
 Page title: ${title}
 
-Respond in JSON format:
+Respond ONLY with a JSON object:
 {
   "state": "login_email" | "login_password" | "verification_2fa" | "verification_code" | "logged_in" | "upload_page" | "upload_dialog" | "uploading" | "fill_details" | "processing" | "success" | "error" | "unknown",
   "description": "Brief description of what you see",
   "needs_human": false,
   "next_action": "Description of what to do next",
   "selector_hint": "CSS selector if obvious, or null"
-}`
-        },
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: `Analyze this browser screenshot. Context: ${context}` },
-            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${screenshot}` } }
-          ]
-        }
-      ],
-      max_tokens: 500,
-    }),
-  });
+}`,
+          },
+          {
+            role: 'user',
+            content: `Page body text (truncated):\n${ctx.bodyText}\n\nInteractive elements:\n${interactiveSummary}`,
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.1,
+      }),
+    });
 
-  if (!response.ok) {
-    console.error('[SmartAgent] AI analysis failed:', response.status);
-    return analyzeDOMOnly(page, context);
-  }
-
-  const data = await response.json();
-  const text = data.choices?.[0]?.message?.content || '';
-  
-  // Parse JSON from response (handle markdown code blocks)
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
-      console.log('[SmartAgent] Failed to parse AI response, using DOM analysis');
+    if (!response.ok) {
+      console.error('[SmartAgent] AI analysis failed:', response.status);
+      return analyzeDOMOnly(page, context);
     }
+
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content || '';
+
+    // Parse JSON from response (handle markdown code blocks)
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch {
+        console.log('[SmartAgent] Failed to parse AI response, using DOM analysis');
+      }
+    }
+  } catch (err) {
+    console.warn('[SmartAgent] LM Studio request failed, using DOM analysis:', err.message);
   }
 
   return analyzeDOMOnly(page, context);
@@ -377,12 +386,6 @@ async function extractPageContext(page) {
  * @returns {Promise<object>}
  */
 async function planNextAction(page, goal, history = [], opts = {}) {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    // No API key – return a no-op "failed" action so callers can handle it.
-    return { action: 'failed', reason: 'No LOVABLE_API_KEY set', goalReached: false };
-  }
-
   const ctx = await extractPageContext(page);
 
   // Trim history to last 10 steps to keep prompts manageable
@@ -427,25 +430,21 @@ Rules:
 
   const userMessages = [{ type: 'text', text: 'What is the next action?' }];
 
-  if (opts.useVision) {
-    const screenshot = await takeScreenshot(page);
-    userMessages.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${screenshot}` } });
-  }
-
   try {
-    const response = await fetch(LOVABLE_AI_URL, {
+    const response = await fetch(getLmStudioUrl(), {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${getApiKey()}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
+        model: getLmStudioModel(),
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessages },
+          { role: 'user', content: userMessages[0].text },
         ],
         max_tokens: 400,
+        temperature: 0.1,
       }),
     });
 
