@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getSettings, saveSettings } from '@/lib/storage';
+import { formatBuildLabel } from '@/lib/buildInfo';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -58,6 +59,7 @@ export default function AppLayout() {
 
   const uploadMode = settings?.uploadMode || 'local';
   const isCloud = uploadMode === 'cloud';
+  const buildLabel = formatBuildLabel(__BUILD_NAME__, __BUILD_NUMBER__, __PR_NUMBER__);
 
   // Close mobile nav on route change
   useEffect(() => {
@@ -203,14 +205,7 @@ export default function AppLayout() {
           <p className="text-xs text-muted-foreground px-1">
             {isCloud ? 'Cloud DB · Cloud uploads' : 'Cloud DB · Local uploads'}
             <span className="block text-[10px] opacity-60 mt-0.5">
-              {__BUILD_NAME__ ? (
-                <span>{__BUILD_NAME__}</span>
-              ) : (
-                <span>dev</span>
-              )}
-              {__BUILD_NUMBER__ && (
-                <span> · Build #{__BUILD_NUMBER__}</span>
-              )}
+              <span>{buildLabel}</span>
             </span>
           </p>
         </div>

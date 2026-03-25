@@ -3,6 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
+const { sendTelegramPhoto } = require('../telegram');
+const { getTikTokPageDescription, isTikTokPublishedUrl } = require('./tiktok-state');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
 
@@ -53,6 +55,7 @@ async function extractTikTokVideoUrl(page) {
 }
 
 async function assessTikTokCompletion(page) {
+  const currentUrl = page.url();
   const dom = await page.evaluate(() => {
     const text = (document.body?.innerText || '').toLowerCase();
     const success =
@@ -73,6 +76,9 @@ async function assessTikTokCompletion(page) {
 
   if (dom.success) return { success: true, reason: 'TikTok UI shows upload/post completion.' };
   if (dom.hardError) return { success: false, needsHuman: true, reason: 'TikTok UI shows an upload/post error.' };
+  if (isTikTokPublishedUrl(currentUrl)) {
+    return { success: true, reason: `TikTok redirected to ${getTikTokPageDescription(currentUrl)}.` };
+  }
 
   try {
     const ai = await analyzePage(page, 'TikTok post-completion check. Decide if upload succeeded/processing, or needs manual help.');
@@ -88,6 +94,59 @@ async function assessTikTokCompletion(page) {
   } catch {
     return { success: false, needsHuman: false, reason: 'No clear TikTok completion signal found.' };
   }
+}
+
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function truncateText(text, maxLength = 220) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+async function collectTikTokFailureDiagnostics(page, fallbackReason) {
+  const url = page.url();
+  const title = await page.title().catch(() => '');
+  const bodyText = await page.evaluate(() => (
+    document.body?.innerText || ''
+  )).catch(() => '');
+
+  let aiDescription = '';
+  try {
+    const ai = await analyzePage(
+      page,
+      'TikTok upload failed after clicking Post. Briefly describe the exact screen, blocker, or current state.',
+    );
+    aiDescription = String(ai?.description || '');
+  } catch {}
+
+  return {
+    reason: fallbackReason,
+    url,
+    title,
+    pageDescription: getTikTokPageDescription(url),
+    aiDescription,
+    bodyText: truncateText(bodyText, 240),
+  };
+}
+
+function formatTikTokFailureMessage(diagnostics) {
+  const details = [
+    diagnostics.reason,
+    diagnostics.aiDescription && diagnostics.aiDescription !== diagnostics.reason ? `AI: ${diagnostics.aiDescription}` : '',
+    diagnostics.pageDescription ? `Page: ${diagnostics.pageDescription}` : '',
+    diagnostics.url ? `URL: ${diagnostics.url}` : '',
+    diagnostics.bodyText ? `Visible text: ${diagnostics.bodyText}` : '',
+  ].filter(Boolean);
+
+  return truncateText(details.join(' | '), 500);
 }
 
 async function navigateToTikTokUpload(page) {
@@ -720,7 +779,23 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     }
 
     if (!completion.success) {
-      throw new Error(`TikTok publish was not confirmed. ${completion.reason}`);
+      const failureDiagnostics = await collectTikTokFailureDiagnostics(page, completion.reason);
+      const failureMessage = formatTikTokFailureMessage(failureDiagnostics);
+      const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
+
+      if (screenshotBuffer && credentials.telegram?.enabled && credentials.telegram?.chatId) {
+        await sendTelegramPhoto(
+          credentials.telegram.botToken,
+          credentials.telegram.chatId,
+          screenshotBuffer,
+          `📸 <b>TikTok publish failure</b>\n${escapeHtml(truncateText(failureMessage, 900))}`,
+          credentials.backend,
+        ).catch((telegramError) => {
+          console.warn('[TikTok] Failed to send diagnostic screenshot:', telegramError.message);
+        });
+      }
+
+      throw new Error(`TikTok publish was not confirmed. ${failureMessage}`);
     }
 
     console.log(`[TikTok] Upload complete! URL: ${videoUrl || '(no URL extracted)'}`);
