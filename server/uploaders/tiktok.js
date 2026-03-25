@@ -12,6 +12,9 @@ const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'ti
 const TIKTOK_UPLOAD_URL = 'https://www.tiktok.com/tiktokstudio/upload';
 const TIKTOK_UPLOAD_URL_ALT = 'https://www.tiktok.com/creator-center/upload';
 const MAX_CAPTION_LENGTH = 2200;
+const MAX_FAILURE_VISIBLE_TEXT_LENGTH = 240;
+const MAX_FAILURE_MESSAGE_LENGTH = 500;
+const MAX_TELEGRAM_DIAGNOSTIC_CAPTION_LENGTH = 900;
 
 async function extractTikTokVideoUrl(page) {
   // First try: look for direct video links in page
@@ -133,7 +136,7 @@ async function collectTikTokFailureDiagnostics(page, fallbackReason) {
     title,
     pageDescription: getTikTokPageDescription(url),
     aiDescription,
-    bodyText: truncateText(bodyText, 240),
+    bodyText: truncateText(bodyText, MAX_FAILURE_VISIBLE_TEXT_LENGTH),
   };
 }
 
@@ -146,7 +149,7 @@ function formatTikTokFailureMessage(diagnostics) {
     diagnostics.bodyText ? `Visible text: ${diagnostics.bodyText}` : '',
   ].filter(Boolean);
 
-  return truncateText(details.join(' | '), 500);
+  return truncateText(details.join(' | '), MAX_FAILURE_MESSAGE_LENGTH);
 }
 
 async function navigateToTikTokUpload(page) {
@@ -788,7 +791,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
           credentials.telegram.botToken,
           credentials.telegram.chatId,
           screenshotBuffer,
-          `📸 <b>TikTok publish failure</b>\n${escapeHtml(truncateText(failureMessage, 900))}`,
+          `📸 <b>TikTok publish failure</b>\n${escapeHtml(truncateText(failureMessage, MAX_TELEGRAM_DIAGNOSTIC_CAPTION_LENGTH))}`,
           credentials.backend,
         ).catch((telegramError) => {
           console.warn('[TikTok] Failed to send diagnostic screenshot:', telegramError.message);
