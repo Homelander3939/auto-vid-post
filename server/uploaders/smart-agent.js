@@ -26,6 +26,7 @@
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+const { getTikTokPageDescription, isTikTokPublishedUrl, isTikTokUploadUrl } = require('./tiktok-state');
 
 // LM Studio local model configuration
 // Override with env vars: LM_STUDIO_URL, LM_STUDIO_MODEL, LM_STUDIO_API_KEY
@@ -213,6 +214,18 @@ async function analyzeDOMOnly(page, context) {
 
   if (url.includes('studio.youtube.com') && !url.includes('accounts.google.com')) {
     return { state: 'logged_in', description: 'YouTube Studio dashboard', needs_human: false, next_action: 'Click Create button' };
+  }
+
+  if (isTikTokPublishedUrl(url)) {
+    return { state: 'success', description: getTikTokPageDescription(url), needs_human: false, next_action: 'Review published video' };
+  }
+
+  if (isTikTokUploadUrl(url)) {
+    return { state: 'upload_page', description: getTikTokPageDescription(url), needs_human: false, next_action: 'Upload video' };
+  }
+
+  if (url.includes('tiktok.com/tiktokstudio')) {
+    return { state: 'logged_in', description: getTikTokPageDescription(url), needs_human: false, next_action: 'Open upload flow' };
   }
 
   if (url.includes('tiktok.com/creator') || url.includes('tiktok.com/upload')) {

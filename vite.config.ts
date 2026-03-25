@@ -15,6 +15,7 @@ export default defineConfig(({ mode }) => ({
   define: {
     __BUILD_NUMBER__: JSON.stringify(process.env.VITE_BUILD_NUMBER || ''),
     __BUILD_NAME__: JSON.stringify(process.env.VITE_BUILD_NAME || ''),
+    __PR_NUMBER__: JSON.stringify(process.env.VITE_PR_NUMBER || ''),
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {
