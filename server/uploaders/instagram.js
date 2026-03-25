@@ -2,9 +2,10 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
-const { smartClick, smartFill, analyzePage, waitForStateChange } = require('./smart-agent');
+const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
+const MAX_CAPTION_LENGTH = 2200;
 
 async function extractInstagramPostUrl(page) {
   return page.evaluate(() => {
@@ -181,12 +182,16 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       'svg[aria-label="New post"]',
       '[aria-label="Create"]',
       'svg[aria-label="Create"]',
+      '[aria-label="New Post"]',
+      'svg[aria-label="New Post"]',
+      'a[href="/create/style/"]',
+      'a[href="/create/select/"]',
     ], 'New post');
     
     if (!newPostClicked) {
       newPostClicked = await page.evaluate(() => {
-        // Try SVG-based icons
-        const svgLabels = ['New post', 'Create', 'New Post'];
+        // Try SVG-based icons with various labels
+        const svgLabels = ['New post', 'Create', 'New Post', 'Новая публикация', 'Crear'];
         for (const label of svgLabels) {
           const svg = document.querySelector(`svg[aria-label="${label}"]`);
           if (svg) {
@@ -202,49 +207,138 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           link.click();
           return true;
         }
+        // Try finding the create/plus icon by its typical position (left sidebar)
+        const sidebarLinks = document.querySelectorAll('nav a, nav div[role="button"], [role="navigation"] a');
+        for (const link of sidebarLinks) {
+          const text = (link.textContent || '').trim().toLowerCase();
+          const label = (link.getAttribute('aria-label') || '').toLowerCase();
+          if (text.includes('create') || text.includes('new post') ||
+              label.includes('create') || label.includes('new post')) {
+            link.click();
+            return true;
+          }
+        }
         return false;
       });
     }
     
+    // Agent fallback: use LLM with vision to find the Create button
     if (!newPostClicked) {
-      // Last resort: direct URL navigation to create
-      console.log('[Instagram] Trying direct navigation to create flow...');
-      // Instagram doesn't have a direct create URL, so we'll try keyboard shortcut
-      // or clicking the + icon in bottom nav (mobile-like layout)
+      console.log('[Instagram] Standard selectors failed, trying agent to find Create button...');
+      try {
+        const agentResult = await runAgentTask(page,
+          'On Instagram\'s main page, find and click the "Create" or "New post" button in the left sidebar navigation. It usually has a plus (+) icon.',
+          { maxSteps: 5, stepDelayMs: 500 });
+        newPostClicked = agentResult.success;
+      } catch (e) {
+        console.warn('[Instagram] Agent create-button click failed:', e.message);
+      }
     }
     
+    if (!newPostClicked) {
+      throw new Error('Instagram: Could not find Create/New post button. Make sure you are logged in.');
+    }
+
     await page.waitForTimeout(3000);
 
     // ===== PHASE 3: SELECT VIDEO FILE =====
     console.log('[Instagram] Setting video file...');
+    let fileUploaded = false;
+
+    // Strategy 1: Direct file input (may already be visible from the dialog)
     let fileInput = await page.$('input[type="file"]');
-    
-    if (!fileInput) {
-      // Try clicking "Select from computer" button
-      await smartClick(page, [
-        'button:has-text("Select from computer")',
-        'button:has-text("Select From Computer")',
-        'button:has-text("Select")',
-      ], 'Select from computer');
-      await page.waitForTimeout(2000);
-      fileInput = await page.$('input[type="file"]');
-    }
-    
-    if (!fileInput) {
-      // Force-create file input or find hidden one
-      fileInput = await page.evaluate(() => {
-        const inputs = document.querySelectorAll('input[type="file"]');
-        if (inputs.length > 0) return true;
-        return false;
-      });
-      if (fileInput === true) {
-        fileInput = await page.$('input[type="file"]');
+    if (fileInput) {
+      try {
+        await fileInput.setInputFiles(videoPath);
+        fileUploaded = true;
+        console.log('[Instagram] Video set via direct file input');
+      } catch (e) {
+        console.warn('[Instagram] Direct setInputFiles failed:', e.message);
       }
     }
-    
-    if (!fileInput) throw new Error('Instagram upload dialog not found. Try creating a post manually first to verify your session.');
 
-    await fileInput.setInputFiles(videoPath);
+    // Strategy 2: Click "Select from computer" then use fileChooser
+    if (!fileUploaded) {
+      try {
+        const [fileChooser] = await Promise.all([
+          page.waitForEvent('filechooser', { timeout: 10000 }),
+          (async () => {
+            const clicked = await smartClick(page, [
+              'button:has-text("Select from computer")',
+              'button:has-text("Select From Computer")',
+              'button:has-text("Select from Computer")',
+              'button:has-text("Select")',
+              'button:has-text("Choose")',
+            ], 'Select from computer');
+            if (!clicked) {
+              await page.evaluate(() => {
+                const btns = document.querySelectorAll('button');
+                for (const btn of btns) {
+                  const text = (btn.textContent || '').toLowerCase();
+                  if (text.includes('select') || text.includes('computer') || text.includes('choose')) {
+                    btn.click();
+                    return;
+                  }
+                }
+              });
+            }
+          })(),
+        ]);
+        await fileChooser.setFiles(videoPath);
+        fileUploaded = true;
+        console.log('[Instagram] Video set via fileChooser + Select from computer');
+      } catch (e) {
+        console.warn('[Instagram] fileChooser with Select button failed:', e.message);
+      }
+    }
+
+    // Strategy 3: Force-discover hidden file inputs
+    if (!fileUploaded) {
+      const discovered = await page.evaluate(() => {
+        const inputs = document.querySelectorAll('input[type="file"]');
+        if (inputs.length > 0) {
+          inputs[0].style.display = 'block';
+          inputs[0].style.opacity = '1';
+          inputs[0].style.position = 'fixed';
+          inputs[0].style.top = '0';
+          inputs[0].style.left = '0';
+          inputs[0].style.zIndex = '999999';
+          return true;
+        }
+        return false;
+      });
+      if (discovered) {
+        fileInput = await page.$('input[type="file"]');
+        if (fileInput) {
+          try {
+            await fileInput.setInputFiles(videoPath);
+            fileUploaded = true;
+            console.log('[Instagram] Video set via forced file input');
+          } catch {}
+        }
+      }
+    }
+
+    // Strategy 4: Agent fallback
+    if (!fileUploaded) {
+      console.log('[Instagram] Trying agent to find file upload...');
+      try {
+        const agentResult = await runAgentTask(page,
+          'Find and click the "Select from computer" or similar button to open a file upload dialog on Instagram\'s create post dialog.',
+          { maxSteps: 5, stepDelayMs: 500 });
+        if (agentResult.success) {
+          // Try file input again after agent interaction
+          fileInput = await page.$('input[type="file"]');
+          if (fileInput) {
+            await fileInput.setInputFiles(videoPath);
+            fileUploaded = true;
+          }
+        }
+      } catch {}
+    }
+    
+    if (!fileUploaded) throw new Error('Instagram upload dialog not found. Try creating a post manually first to verify your session.');
+
     console.log('[Instagram] Video file set, waiting for processing...');
     await page.waitForTimeout(5000);
 
@@ -253,25 +347,36 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     for (let i = 0; i < 4; i++) {
       await page.waitForTimeout(2000);
       
-      const clicked = await smartClick(page, [
+      let clicked = await smartClick(page, [
         'button:has-text("Next")',
         '[aria-label="Next"]',
         'div[role="button"]:has-text("Next")',
+        'button:has-text("Continue")',
       ], 'Next');
       
       if (!clicked) {
         // Try via DOM evaluation
-        const domClicked = await page.evaluate(() => {
+        clicked = await page.evaluate(() => {
           const buttons = document.querySelectorAll('button, div[role="button"]');
           for (const btn of buttons) {
             const text = (btn.textContent || '').trim().toLowerCase();
-            if (text === 'next') { btn.click(); return true; }
+            if (text === 'next' || text === 'continue') { btn.click(); return true; }
           }
           return false;
         });
-        if (!domClicked) break;
       }
       
+      // Agent fallback for Next button
+      if (!clicked) {
+        try {
+          const result = await runAgentTask(page,
+            'Click the "Next" button in the Instagram post creation dialog to advance to the next step.',
+            { maxSteps: 3, stepDelayMs: 500 });
+          clicked = result.success;
+        } catch {}
+      }
+      
+      if (!clicked) break;
       await page.waitForTimeout(2000);
     }
 
@@ -280,30 +385,68 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       const caption = `${metadata.title || ''}\n\n${metadata.description || ''}\n\n${(metadata.tags || []).map(t => '#' + t).join(' ')}`.trim();
       console.log('[Instagram] Setting caption...');
       
-      const filled = await page.evaluate((text) => {
-        const editors = document.querySelectorAll(
-          '[contenteditable="true"], textarea[aria-label*="caption" i], ' +
-          '[aria-label="Write a caption..."], [aria-label*="Write a caption"],' +
-          'textarea[placeholder*="caption" i], textarea'
-        );
-        for (const editor of editors) {
-          if (editor.offsetHeight === 0) continue;
-          editor.focus();
-          editor.click();
-          document.execCommand('selectAll', false, null);
-          document.execCommand('insertText', false, text);
-          return true;
-        }
-        return false;
-      }, caption);
-      
-      if (!filled) {
-        // Keyboard fallback
-        const captionField = await page.$('[contenteditable="true"]') || await page.$('textarea');
-        if (captionField) {
-          await captionField.click();
+      let captionFilled = false;
+
+      // Strategy 1: Keyboard-based approach (most reliable for contenteditable)
+      const captionSelectors = [
+        '[aria-label="Write a caption..."]',
+        '[aria-label*="Write a caption"]',
+        '[aria-label*="caption" i]',
+        'textarea[aria-label*="caption" i]',
+        'textarea[placeholder*="caption" i]',
+        '[contenteditable="true"]',
+        'textarea',
+      ];
+
+      for (const sel of captionSelectors) {
+        if (captionFilled) break;
+        try {
+          const el = await page.$(sel);
+          if (!el) continue;
+          const visible = await el.isVisible().catch(() => false);
+          if (!visible) continue;
+          
+          await el.click();
           await page.waitForTimeout(300);
-          await page.keyboard.type(caption.slice(0, 2200), { delay: 10 });
+          await page.keyboard.press('Control+a');
+          await page.waitForTimeout(100);
+          await page.keyboard.press('Backspace');
+          await page.waitForTimeout(100);
+          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 5 });
+          captionFilled = true;
+          console.log(`[Instagram] Caption filled via ${sel}`);
+        } catch {}
+      }
+
+      // Strategy 2: DOM execCommand
+      if (!captionFilled) {
+        captionFilled = await page.evaluate((text) => {
+          const editors = document.querySelectorAll(
+            '[contenteditable="true"], textarea[aria-label*="caption" i], ' +
+            '[aria-label="Write a caption..."], [aria-label*="Write a caption"],' +
+            'textarea[placeholder*="caption" i], textarea'
+          );
+          for (const editor of editors) {
+            if (editor.offsetHeight === 0) continue;
+            editor.focus();
+            editor.click();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('insertText', false, text);
+            return true;
+          }
+          return false;
+        }, caption);
+      }
+
+      // Strategy 3: Agent fallback
+      if (!captionFilled) {
+        console.warn('[Instagram] Could not fill caption with standard methods, trying agent...');
+        try {
+          await runAgentTask(page,
+            `Fill the caption field with: "${caption.slice(0, 300)}"`,
+            { maxSteps: 5, stepDelayMs: 500 });
+        } catch (e) {
+          console.warn('[Instagram] Agent caption fill failed:', e.message);
         }
       }
     }
@@ -315,6 +458,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       'button:has-text("Share")',
       '[aria-label="Share"]',
       'div[role="button"]:has-text("Share")',
+      'button:has-text("Post")',
+      'button:has-text("Publish")',
     ], 'Share');
     
     if (!shareClicked) {
@@ -322,10 +467,23 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         const buttons = document.querySelectorAll('button, div[role="button"]');
         for (const btn of buttons) {
           const text = (btn.textContent || '').trim().toLowerCase();
-          if (text === 'share') { btn.click(); return true; }
+          if (text === 'share' || text === 'post' || text === 'publish') { btn.click(); return true; }
         }
         return false;
       });
+    }
+
+    // Agent fallback: use LLM to find Share button
+    if (!shareClicked) {
+      console.log('[Instagram] Standard Share button not found, trying agent...');
+      try {
+        const agentResult = await runAgentTask(page,
+          'Find and click the "Share" button to publish this Instagram post/reel. It should be a blue button in the dialog.',
+          { maxSteps: 5, stepDelayMs: 500 });
+        shareClicked = agentResult.success;
+      } catch (e) {
+        console.warn('[Instagram] Agent share-click failed:', e.message);
+      }
     }
     
     if (!shareClicked) {

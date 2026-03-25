@@ -45,6 +45,12 @@ function getApiKey() {
   return process.env.LM_STUDIO_API_KEY || process.env.LOVABLE_API_KEY || 'lm-studio';
 }
 
+// Vision is enabled by default — set LM_STUDIO_VISION=false to disable
+function isVisionEnabled() {
+  const val = (process.env.LM_STUDIO_VISION || 'true').toLowerCase();
+  return val !== 'false' && val !== '0';
+}
+
 /**
  * Take a screenshot and return as base64
  */
@@ -54,17 +60,34 @@ async function takeScreenshot(page) {
 }
 
 /**
- * Analyze the current page state using LM Studio AI
+ * Analyze the current page state using LM Studio AI (with optional vision)
  */
 async function analyzePage(page, context) {
   const url = page.url();
   const title = await page.title();
 
-  // Build page context using DOM text (LM Studio text model, no vision)
   const ctx = await extractPageContext(page).catch(() => ({ url, title, interactive: [], bodyText: '' }));
   const interactiveSummary = ctx.interactive.slice(0, 40)
     .map(e => `  [${e.tag}] selector="${e.selector}" text="${e.text}"`)
     .join('\n');
+
+  const textPart = `Page body text (truncated):\n${ctx.bodyText}\n\nInteractive elements:\n${interactiveSummary}`;
+
+  // Build user message — include screenshot if vision is enabled
+  let userContent;
+  if (isVisionEnabled()) {
+    try {
+      const screenshotB64 = await takeScreenshot(page);
+      userContent = [
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${screenshotB64}` } },
+        { type: 'text', text: textPart },
+      ];
+    } catch {
+      userContent = textPart;
+    }
+  } else {
+    userContent = textPart;
+  }
 
   try {
     const response = await fetch(getLmStudioUrl(), {
@@ -78,7 +101,7 @@ async function analyzePage(page, context) {
         messages: [
           {
             role: 'system',
-            content: `You are a browser automation expert. Analyze the page DOM and tell me the current state.
+            content: `You are a browser automation expert. Analyze the page DOM${isVisionEnabled() ? ' and the screenshot' : ''} and tell me the current state.
 
 Context: ${context}
 Current URL: ${url}
@@ -95,7 +118,7 @@ Respond ONLY with a JSON object:
           },
           {
             role: 'user',
-            content: `Page body text (truncated):\n${ctx.bodyText}\n\nInteractive elements:\n${interactiveSummary}`,
+            content: userContent,
           }
         ],
         max_tokens: 500,
@@ -111,7 +134,6 @@ Respond ONLY with a JSON object:
     const data = await response.json();
     const text = data.choices?.[0]?.message?.content || '';
 
-    // Parse JSON from response (handle markdown code blocks)
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -387,6 +409,7 @@ async function extractPageContext(page) {
  */
 async function planNextAction(page, goal, history = [], opts = {}) {
   const ctx = await extractPageContext(page);
+  const useVision = opts.useVision !== undefined ? opts.useVision : isVisionEnabled();
 
   // Trim history to last 10 steps to keep prompts manageable
   const recentHistory = history.slice(-10).map((h, i) => `  Step ${i + 1}: ${h.action} → ${h.reason || ''}`).join('\n');
@@ -411,7 +434,7 @@ ${recentHistory || '  (none yet)'}
 
 Respond with a JSON object and nothing else:
 {
-  "action":    "click|fill|select|navigate|scroll|wait|done|failed",
+  "action":    "click|fill|select|navigate|scroll|wait|upload_file|done|failed",
   "selector":  "<CSS selector or null>",
   "value":     "<text to type or option value, or null>",
   "url":       "<full URL for navigate, or null>",
@@ -426,9 +449,24 @@ Rules:
 - Use "done" when you are confident the goal has been fully achieved.
 - Use "failed" only when no progress is possible (e.g., captcha, blocked).
 - Prefer selectors from the INTERACTIVE ELEMENTS list above.
-- Never repeat the exact same action twice in a row.`;
+- Never repeat the exact same action twice in a row.
+- Use "upload_file" when you need to trigger a file upload (click the upload/select button and set the file).`;
 
-  const userMessages = [{ type: 'text', text: 'What is the next action?' }];
+  // Build user content with optional vision
+  let userContent;
+  if (useVision) {
+    try {
+      const screenshotB64 = await takeScreenshot(page);
+      userContent = [
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${screenshotB64}` } },
+        { type: 'text', text: 'What is the next action? Look at the screenshot and the interactive elements listed above.' },
+      ];
+    } catch {
+      userContent = 'What is the next action?';
+    }
+  } else {
+    userContent = 'What is the next action?';
+  }
 
   try {
     const response = await fetch(getLmStudioUrl(), {
@@ -441,7 +479,7 @@ Rules:
         model: getLmStudioModel(),
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessages[0].text },
+          { role: 'user', content: userContent },
         ],
         max_tokens: 400,
         temperature: 0.1,
@@ -516,6 +554,34 @@ async function executeAgentAction(page, action) {
         await page.waitForTimeout(ms || 1000);
         return true;
       }
+      case 'upload_file': {
+        // Trigger file chooser by clicking the upload button, then set the file
+        if (!value) {
+          console.warn('[SmartAgent] upload_file action requires value (file path)');
+          return false;
+        }
+        try {
+          const clickTarget = selector || 'text=Select video';
+          const [fileChooser] = await Promise.all([
+            page.waitForEvent('filechooser', { timeout: 10000 }),
+            page.click(clickTarget).catch((clickErr) =>
+              page.evaluate((sel) => {
+                const el = document.querySelector(sel);
+                if (el) el.click();
+              }, clickTarget).catch((evalErr) => {
+                console.warn('[SmartAgent] upload_file click fallback failed:', evalErr.message);
+              })
+            ),
+          ]);
+          await fileChooser.setFiles(value);
+          return true;
+        } catch (e) {
+          console.warn('[SmartAgent] upload_file fallback to setInputFiles:', e.message);
+          const fi = await page.$('input[type="file"]');
+          if (fi) { await fi.setInputFiles(value); return true; }
+          return false;
+        }
+      }
       case 'done':
       case 'failed':
         return true; // Caller checks action.action to decide whether to stop
@@ -554,7 +620,7 @@ async function runAgentTask(page, goal, options = {}) {
   const {
     maxSteps = 15,
     stepDelayMs = 800,
-    useVision = false,
+    useVision = isVisionEnabled(),
     verbose = true,
   } = options;
 
@@ -621,6 +687,7 @@ module.exports = {
   smartClick,
   smartFill,
   getApiKey,
+  isVisionEnabled,
   // Agentic loop API
   extractPageContext,
   planNextAction,

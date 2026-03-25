@@ -1009,11 +1009,18 @@ async function checkPlatformStats(platform, credentials) {
   fs.mkdirSync(sessionDir, { recursive: true });
 
   console.log(`[Stats] Opening browser for ${platform} stats check...`);
-  const context = await chromium.launchPersistentContext(sessionDir, {
-    headless: false,
-    args: ['--disable-blink-features=AutomationControlled', '--start-maximized'],
-    viewport: { width: 1440, height: 900 },
-  });
+
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(sessionDir, {
+      headless: false,
+      args: ['--disable-blink-features=AutomationControlled', '--start-maximized'],
+      viewport: { width: 1440, height: 900 },
+    });
+  } catch (launchErr) {
+    console.error(`[Stats] Failed to launch browser for ${platform}:`, launchErr.message);
+    throw new Error(`Browser launch failed: ${launchErr.message}. Make sure Playwright is installed (run: npx playwright install chromium).`);
+  }
 
   const page = context.pages()[0] || await context.newPage();
 
@@ -1022,21 +1029,25 @@ async function checkPlatformStats(platform, credentials) {
     const creds = credentials || {};
 
     if (platform === 'youtube') {
-      await ensureYouTubeLogin(page, creds);
+      const loggedIn = await ensureYouTubeLogin(page, creds);
+      if (!loggedIn) console.warn('[Stats] YouTube login may have failed, attempting stats scrape anyway...');
       stats = await scrapeYouTubeShortsStats(page, { maxVideos: 20 });
     } else if (platform === 'tiktok') {
-      await ensureTikTokLogin(page, creds);
+      const loggedIn = await ensureTikTokLogin(page, creds);
+      if (!loggedIn) console.warn('[Stats] TikTok login may have failed, attempting stats scrape anyway...');
       stats = await scrapeTikTokStats(page, { maxVideos: 20 });
     } else if (platform === 'instagram') {
-      await ensureInstagramLogin(page, creds);
+      const loggedIn = await ensureInstagramLogin(page, creds);
+      if (!loggedIn) console.warn('[Stats] Instagram login may have failed, attempting stats scrape anyway...');
       stats = await scrapeInstagramReelsStats(page, { maxVideos: 20 });
     }
 
     await context.close();
+    console.log(`[Stats] ${platform} stats check completed: ${stats.length} videos found`);
     return stats;
   } catch (err) {
     console.error(`[Stats] ${platform} stats check failed:`, err.message);
-    await context.close();
+    await context.close().catch(() => {});
     throw err;
   }
 }

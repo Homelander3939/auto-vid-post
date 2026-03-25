@@ -32,7 +32,7 @@
 
 'use strict';
 
-const { runAgentTask } = require('./smart-agent');
+const { runAgentTask, isVisionEnabled } = require('./smart-agent');
 
 /**
  * Map a platform + video metadata to a natural-language upload goal string.
@@ -112,7 +112,7 @@ async function agentUpload(page, opts = {}) {
     description = '',
     tags = [],
     maxSteps = 20,
-    useVision = false,
+    useVision = isVisionEnabled(),
     verbose = true,
   } = opts;
 

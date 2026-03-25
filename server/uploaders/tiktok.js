@@ -2,16 +2,18 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
-const { smartClick, smartFill, analyzePage, waitForStateChange } = require('./smart-agent');
+const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
 
 // TikTok Studio upload URL (updated — old /creator-center/upload no longer works)
 const TIKTOK_UPLOAD_URL = 'https://www.tiktok.com/tiktokstudio/upload';
 const TIKTOK_UPLOAD_URL_ALT = 'https://www.tiktok.com/creator-center/upload';
+const MAX_CAPTION_LENGTH = 2200;
 
 async function extractTikTokVideoUrl(page) {
-  return page.evaluate(() => {
+  // First try: look for direct video links in page
+  const url = await page.evaluate(() => {
     const candidates = Array.from(document.querySelectorAll('a[href]'))
       .map((a) => a.getAttribute('href') || '')
       .filter(Boolean);
@@ -21,6 +23,30 @@ async function extractTikTokVideoUrl(page) {
         if (href.startsWith('http')) return href;
         return `https://www.tiktok.com${href}`;
       }
+    }
+    return '';
+  }).catch(() => '');
+
+  if (url) return url;
+
+  // Second try: check for video ID in URL or page content
+  const pageUrl = page.url();
+  const videoMatch = pageUrl.match(/\/video\/(\d+)/);
+  if (videoMatch) return pageUrl;
+
+  // Third try: scan for success message with video link or profile link
+  return page.evaluate(() => {
+    const text = document.body?.innerText || '';
+    const urlMatch = text.match(/tiktok\.com\/@[\w.-]+\/video\/\d+/);
+    if (urlMatch) return `https://www.${urlMatch[0]}`;
+
+    // Check for any tiktok profile link (video was posted to this profile)
+    const profileLinks = Array.from(document.querySelectorAll('a[href*="tiktok.com/@"]'))
+      .map(a => a.getAttribute('href') || '')
+      .filter(h => h.includes('/@'));
+    if (profileLinks.length > 0) {
+      const link = profileLinks[0];
+      return link.startsWith('http') ? link : `https://www.tiktok.com${link}`;
     }
     return '';
   }).catch(() => '');
@@ -212,28 +238,103 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
 
     // ===== PHASE 2: UPLOAD VIDEO =====
     console.log('[TikTok] Setting video file...');
+    let fileUploaded = false;
+
+    // Strategy 1: Direct setInputFiles on existing file input (works for hidden inputs)
     let fileInput = await page.$('input[type="file"]');
-    
-    // If no file input found, try to trigger it
     if (!fileInput) {
-      console.log('[TikTok] No file input found, trying to trigger upload dialog...');
-      await page.evaluate(() => {
-        const buttons = document.querySelectorAll('button, div[role="button"], label');
-        for (const btn of buttons) {
-          const text = (btn.textContent || '').toLowerCase();
-          if (text.includes('select video') || text.includes('select file') || text.includes('upload')) {
-            btn.click();
-            return;
-          }
+      // Also check all frames (TikTok may embed upload in iframe)
+      try {
+        for (const frame of page.frames()) {
+          fileInput = await frame.$('input[type="file"]').catch(() => null);
+          if (fileInput) break;
         }
-      });
-      await page.waitForTimeout(2000);
-      fileInput = await page.$('input[type="file"]');
+      } catch (e) {
+        console.warn('[TikTok] Frame search for file input failed:', e.message);
+      }
     }
 
-    if (!fileInput) throw new Error('TikTok upload page not found. Try logging in manually at https://www.tiktok.com/tiktokstudio/upload first.');
+    if (fileInput) {
+      try {
+        await fileInput.setInputFiles(videoPath);
+        fileUploaded = true;
+        console.log('[TikTok] Video set via direct file input');
+      } catch (e) {
+        console.warn('[TikTok] Direct setInputFiles failed:', e.message);
+      }
+    }
 
-    await fileInput.setInputFiles(videoPath);
+    // Strategy 2: Use fileChooser event + click "Select video" button
+    if (!fileUploaded) {
+      console.log('[TikTok] Trying fileChooser event pattern...');
+      try {
+        const [fileChooser] = await Promise.all([
+          page.waitForEvent('filechooser', { timeout: 10000 }),
+          (async () => {
+            // Try clicking the Select video button
+            const clicked = await smartClick(page, [
+              'button:has-text("Select video")',
+              'button:has-text("Select file")',
+              'button:has-text("Upload")',
+              'div[role="button"]:has-text("Select")',
+              'label:has-text("Select")',
+            ], 'Select video');
+            if (!clicked) {
+              // DOM-based button click
+              await page.evaluate(() => {
+                const btns = document.querySelectorAll('button, div[role="button"], label');
+                for (const btn of btns) {
+                  const t = (btn.textContent || '').toLowerCase();
+                  if (t.includes('select video') || t.includes('select file') || t.includes('upload video')) {
+                    btn.click();
+                    return;
+                  }
+                }
+                // Click the upload area itself
+                const area = document.querySelector('[class*="upload"], [class*="Upload"]');
+                if (area) area.click();
+              });
+            }
+          })(),
+        ]);
+        await fileChooser.setFiles(videoPath);
+        fileUploaded = true;
+        console.log('[TikTok] Video set via fileChooser event');
+      } catch (e) {
+        console.warn('[TikTok] fileChooser pattern failed:', e.message);
+      }
+    }
+
+    // Strategy 3: Force-find and make file input accept files
+    if (!fileUploaded) {
+      console.log('[TikTok] Trying force file input discovery...');
+      const discovered = await page.evaluate(() => {
+        // Find ANY file input, even deeply hidden ones
+        const inputs = document.querySelectorAll('input[type="file"]');
+        if (inputs.length > 0) {
+          // Make it interactable
+          inputs[0].style.display = 'block';
+          inputs[0].style.opacity = '1';
+          inputs[0].style.position = 'fixed';
+          inputs[0].style.top = '0';
+          inputs[0].style.left = '0';
+          inputs[0].style.zIndex = '999999';
+          return true;
+        }
+        return false;
+      });
+      if (discovered) {
+        fileInput = await page.$('input[type="file"]');
+        if (fileInput) {
+          await fileInput.setInputFiles(videoPath);
+          fileUploaded = true;
+          console.log('[TikTok] Video set via forced file input');
+        }
+      }
+    }
+
+    if (!fileUploaded) throw new Error('TikTok upload failed: could not set video file. Try logging in manually at https://www.tiktok.com/tiktokstudio/upload first.');
+
     console.log('[TikTok] Video file set, waiting for processing...');
     
     // Wait for video to process - TikTok needs more time
@@ -259,45 +360,73 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       const caption = `${metadata.title || ''}${metadata.description ? '\n\n' + metadata.description : ''}${metadata.tags?.length ? '\n\n' + metadata.tags.map(t => '#' + t).join(' ') : ''}`;
       console.log('[TikTok] Setting caption...');
       
-      // Try multiple approaches for the caption editor
-      const filled = await page.evaluate((text) => {
-        // Try contenteditable editors (TikTok Studio uses DraftJS or similar)
-        const editors = document.querySelectorAll(
-          '[contenteditable="true"], [data-e2e="caption-editor"], .public-DraftEditor-content, ' +
-          '[class*="caption"] [contenteditable], [class*="editor"] [contenteditable], ' +
-          '.DraftEditor-root [contenteditable]'
-        );
-        for (const editor of editors) {
-          editor.focus();
-          editor.click();
-          // Clear existing content
-          document.execCommand('selectAll', false, null);
-          document.execCommand('insertText', false, text);
-          return true;
-        }
-        
-        // Try textarea
-        const textareas = document.querySelectorAll('textarea');
-        for (const ta of textareas) {
-          if (ta.offsetHeight > 0) {
-            ta.focus();
-            ta.value = text;
-            ta.dispatchEvent(new Event('input', { bubbles: true }));
-            ta.dispatchEvent(new Event('change', { bubbles: true }));
+      let captionFilled = false;
+
+      // Strategy 1: Find the caption editor and use keyboard approach (most reliable)
+      const editorSelectors = [
+        '[contenteditable="true"][data-text]',
+        '[data-e2e="caption-editor"] [contenteditable="true"]',
+        '.public-DraftEditor-content[contenteditable="true"]',
+        '[class*="caption"] [contenteditable="true"]',
+        '[class*="editor"] [contenteditable="true"]',
+        '.DraftEditor-root [contenteditable="true"]',
+        '[contenteditable="true"]',
+        'textarea',
+      ];
+
+      for (const sel of editorSelectors) {
+        if (captionFilled) break;
+        try {
+          const el = await page.$(sel);
+          if (!el) continue;
+          const visible = await el.isVisible().catch(() => false);
+          if (!visible) continue;
+
+          await el.click();
+          await page.waitForTimeout(300);
+          // Select all existing text and replace
+          await page.keyboard.press('Control+a');
+          await page.waitForTimeout(100);
+          await page.keyboard.press('Backspace');
+          await page.waitForTimeout(100);
+          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 5 });
+          captionFilled = true;
+          console.log(`[TikTok] Caption filled via ${sel}`);
+        } catch {}
+      }
+
+      // Strategy 2: DOM-based execCommand (may work for some DraftJS editors)
+      if (!captionFilled) {
+        captionFilled = await page.evaluate((text) => {
+          const editors = document.querySelectorAll('[contenteditable="true"]');
+          for (const editor of editors) {
+            if (editor.offsetHeight === 0) continue;
+            editor.focus();
+            editor.click();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('insertText', false, text);
             return true;
           }
-        }
-        return false;
-      }, caption);
+          const textareas = document.querySelectorAll('textarea');
+          for (const ta of textareas) {
+            if (ta.offsetHeight > 0) {
+              ta.focus();
+              ta.value = text;
+              ta.dispatchEvent(new Event('input', { bubbles: true }));
+              ta.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            }
+          }
+          return false;
+        }, caption);
+      }
       
-      if (!filled) {
-        // Keyboard-based fallback
-        const editorEl = await page.$('[contenteditable="true"]') || await page.$('textarea');
-        if (editorEl) {
-          await editorEl.click();
-          await page.waitForTimeout(300);
-          await page.keyboard.press('Control+a');
-          await page.keyboard.type(caption.slice(0, 2200), { delay: 10 });
+      if (!captionFilled) {
+        console.warn('[TikTok] Could not fill caption with standard methods, trying agent...');
+        try {
+          await runAgentTask(page, `Fill the caption/description field with: "${caption.slice(0, 300)}"`, { maxSteps: 5, stepDelayMs: 500 });
+        } catch (e) {
+          console.warn('[TikTok] Agent caption fill failed:', e.message);
         }
       }
     }
@@ -310,6 +439,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     let postClicked = await smartClick(page, [
       'button[data-e2e="post-button"]',
       'button:has-text("Post")',
+      'button:has-text("Publish")',
       '[class*="post"] button',
       'button[type="submit"]',
     ], 'Post');
@@ -319,13 +449,26 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
         const buttons = document.querySelectorAll('button, div[role="button"]');
         for (const btn of buttons) {
           const text = (btn.textContent || '').trim().toLowerCase();
-          if (text === 'post' || text === 'publish') {
+          if (text === 'post' || text === 'publish' || text === 'upload') {
             btn.click();
             return true;
           }
         }
         return false;
       });
+    }
+
+    // Agent fallback: use LLM to find and click the Post button
+    if (!postClicked) {
+      console.log('[TikTok] Standard Post button not found, trying agent...');
+      try {
+        const agentResult = await runAgentTask(page, 
+          'Find and click the Post or Publish button to publish this TikTok video. Look for a prominent button at the bottom of the form.', 
+          { maxSteps: 5, stepDelayMs: 500 });
+        postClicked = agentResult.success;
+      } catch (e) {
+        console.warn('[TikTok] Agent post-click failed:', e.message);
+      }
     }
     
     if (!postClicked) {
