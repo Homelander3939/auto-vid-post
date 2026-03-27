@@ -212,7 +212,18 @@ export default function CampaignScheduler() {
       // Trigger local server for immediate jobs
       if (immediateJobIds.length > 0) {
         try {
-          await fetch('http://localhost:3001/api/process-pending', { method: 'POST' });
+          await Promise.all(
+            immediateJobIds.map((id) =>
+              fetch(`http://localhost:3001/api/process/${id}`, {
+                method: 'POST',
+                signal: AbortSignal.timeout(5000),
+              }),
+            ),
+          );
+          await fetch('http://localhost:3001/api/process-pending', {
+            method: 'POST',
+            signal: AbortSignal.timeout(5000),
+          });
         } catch { /* local server might not be running */ }
       }
 

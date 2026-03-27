@@ -24,6 +24,13 @@ export interface PlatformResult {
   status: 'pending' | 'uploading' | 'success' | 'error';
   url?: string;
   error?: string;
+  recentStats?: Array<{
+    title: string;
+    views: string;
+    likes: string;
+    comments: string;
+    url?: string;
+  }>;
 }
 
 export interface UploadJob {

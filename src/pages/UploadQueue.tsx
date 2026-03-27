@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp, StopCircle, CalendarClock, Repeat } from 'lucide-react';
+import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp, StopCircle, CalendarClock, Repeat, Eye } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const statusColors: Record<string, string> = {
@@ -286,6 +286,12 @@ function JobCard({ job }: { job: UploadJob }) {
                     </Badge>
                   </div>
                   <div className="flex items-center gap-2">
+                    {Array.isArray(p.recentStats) && p.recentStats.length > 0 && (
+                      <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+                        <Eye className="w-3 h-3" />
+                        {p.recentStats[0]?.views || '—'}
+                      </span>
+                    )}
                     {p.url && (
                       <a href={p.url} target="_blank" rel="noopener noreferrer"
                         className="text-primary hover:underline text-xs flex items-center gap-1">
