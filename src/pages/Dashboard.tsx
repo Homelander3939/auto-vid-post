@@ -131,13 +131,14 @@ export default function Dashboard() {
       };
 
       const storagePath = await uploadVideoFile(videoFile);
-      await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms);
+      const job = await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms);
 
       // Trigger the correct executor based on mode
       const uploadMode = settings?.uploadMode || 'local';
       if (uploadMode === 'local') {
         // Try to trigger local server
         try {
+          await fetch(`http://localhost:3001/api/process/${job.id}`, { method: 'POST', signal: AbortSignal.timeout(5000) });
           await fetch('http://localhost:3001/api/process-pending', { method: 'POST', signal: AbortSignal.timeout(5000) });
         } catch {
           console.log('Local server not reachable — cron will pick up the job');
