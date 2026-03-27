@@ -221,6 +221,78 @@ async function dismissExitDialog(page) {
   } catch { return false; }
 }
 
+async function acceptContinueToPostDialog(page) {
+  try {
+    const clicked = await page.evaluate(() => {
+      const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="dialog" i]'));
+
+      const findPostNowButton = (root) => {
+        const buttons = Array.from(root.querySelectorAll('button, div[role="button"]'));
+        return buttons.find((btn) => {
+          const text = normalize(btn.textContent);
+          const label = normalize(btn.getAttribute('aria-label'));
+          return (
+            text === 'post now' ||
+            text.includes('continue to post') ||
+            text.includes('continue posting') ||
+            label === 'post now' ||
+            label.includes('continue to post') ||
+            label.includes('continue posting')
+          );
+        });
+      };
+
+      for (const dialog of dialogs) {
+        const text = normalize(dialog.textContent);
+        const isContinueDialog =
+          (text.includes('continue to post') || text.includes('continue posting')) &&
+          (text.includes('check is complete') || text.includes('checking your video') || text.includes('potential issues'));
+        if (!isContinueDialog) continue;
+
+        const btn = findPostNowButton(dialog);
+        if (btn) {
+          btn.click();
+          return true;
+        }
+      }
+
+      // Fallback if modal isn't correctly marked as dialog
+      const bodyText = normalize(document.body?.innerText);
+      const bodyLooksLikeContinuePrompt =
+        bodyText.includes('continue to post') &&
+        (bodyText.includes('check is complete') || bodyText.includes('checking your video'));
+      if (!bodyLooksLikeContinuePrompt) return false;
+
+      const fallbackBtn = findPostNowButton(document);
+      if (fallbackBtn) {
+        fallbackBtn.click();
+        return true;
+      }
+
+      return false;
+    });
+
+    if (clicked) {
+      console.log('[TikTok] Accepted "Continue to post" dialog via "Post now"');
+      return true;
+    }
+  } catch {}
+
+  const clickedViaSelector = await smartClick(page, [
+    '[role="dialog"] button:has-text("Post now")',
+    'button:has-text("Post now")',
+    'div[role="button"]:has-text("Post now")',
+    'button:has-text("Continue to post")',
+  ], 'Post now');
+
+  if (clickedViaSelector) {
+    console.log('[TikTok] Accepted "Continue to post" dialog via selector fallback');
+  }
+
+  return clickedViaSelector;
+}
+
 async function waitForVideoProcessing(page, maxWaitSeconds = 240) {
   // Wait for TikTok to finish processing the uploaded video file before attempting to post.
   // Checks for explicit upload-complete indicator and absence of any active progress signals.
@@ -280,6 +352,7 @@ async function waitForVideoProcessing(page, maxWaitSeconds = 240) {
 
     // Dismiss any exit dialog that may appear
     await dismissExitDialog(page);
+    await acceptContinueToPostDialog(page);
 
     // Only treat as done when there are no active progress indicators AND Post button is enabled
     if (state.uploadDone ||
@@ -961,10 +1034,26 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
         continue;
       }
 
+      // TikTok often shows a blocking modal: "Continue to post?" -> must click "Post now"
+      await page.waitForTimeout(1000);
+      const approvedContinueDialog = await acceptContinueToPostDialog(page);
+      if (approvedContinueDialog) {
+        await page.waitForTimeout(1500);
+      }
+
       await page.waitForTimeout(2500);
       publishTriggered = await hasPublishStarted();
       if (!publishTriggered) {
         console.warn(`[TikTok] Post click attempt ${clickAttempt + 1} did not trigger publish flow; retrying`);
+      }
+    }
+
+    if (!publishTriggered && postClicked) {
+      // One extra targeted attempt for the "Post now" confirmation modal before escalating.
+      const approvedContinueDialog = await acceptContinueToPostDialog(page);
+      if (approvedContinueDialog) {
+        await page.waitForTimeout(2000);
+        publishTriggered = await hasPublishStarted();
       }
     }
     
