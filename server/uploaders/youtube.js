@@ -949,8 +949,15 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       }
     }
 
-    if (metadata?.description) {
-      console.log('[YouTube] Setting description...');
+    if (metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
+      // Build full description: description text + hashtags from tags
+      const descParts = [];
+      if (metadata.description) descParts.push(metadata.description);
+      if (metadata.tags && metadata.tags.length > 0) {
+        descParts.push(metadata.tags.map(t => t.startsWith('#') ? t : '#' + t).join(' '));
+      }
+      const fullDescription = descParts.join('\n\n');
+      console.log(`[YouTube] Setting description (${fullDescription.length} chars)...`);
       await page.evaluate((desc) => {
         const textboxes = document.querySelectorAll('#textbox');
         if (textboxes.length > 1) {
@@ -961,7 +968,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
           return true;
         }
         return false;
-      }, metadata.description);
+      }, fullDescription);
     }
     await page.waitForTimeout(2000);
 
