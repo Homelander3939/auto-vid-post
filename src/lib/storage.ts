@@ -325,7 +325,7 @@ export async function getSchedules(): Promise<ScheduleConfig[]> {
 // Keep backward compat
 export async function getSchedule(): Promise<ScheduleConfig> {
   const all = await getSchedules();
-  return all[0] || { name: 'Schedule', enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'], folderPath: '', endAt: null };
+  return all[0] || { name: 'Schedule', enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'], folderPath: '', endAt: null, uploadIntervalMinutes: 60 };
 }
 
 export async function saveSchedule(config: ScheduleConfig): Promise<ScheduleConfig> {
