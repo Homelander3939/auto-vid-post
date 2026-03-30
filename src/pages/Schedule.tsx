@@ -314,6 +314,7 @@ export default function Schedule() {
       platforms: ['youtube'],
       folderPath: '',
       endAt: null,
+      uploadIntervalMinutes: 60,
     }]);
   };
 
