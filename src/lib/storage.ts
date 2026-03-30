@@ -55,6 +55,7 @@ export interface ScheduleConfig {
   platforms: string[];
   folderPath: string;
   endAt: string | null;
+  uploadIntervalMinutes: number;
 }
 
 export interface ScheduledUpload {
