@@ -197,7 +197,21 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
             <div className="space-y-1.5">
               <Label className="text-xs flex items-center gap-1.5"><FolderOpen className="w-3.5 h-3.5" /> Source Folder</Label>
               <Input value={folderPath} onChange={e => setFolderPath(e.target.value)} placeholder="D:\AI Video" className="font-mono text-xs" />
-              <p className="text-xs text-muted-foreground">Picks latest video + .txt automatically. If no .txt, metadata is generated from filename.</p>
+              <p className="text-xs text-muted-foreground">Processes ALL videos in folder with matching .txt files, uploading 1-by-1.</p>
+            </div>
+
+            {/* Upload Intensity */}
+            <div className="space-y-2">
+              <Label className="text-xs flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" /> Upload Intensity</Label>
+              <Select value={String(uploadIntervalMinutes)} onValueChange={v => setUploadIntervalMinutes(Number(v))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {INTENSITY_OPTIONS.map(opt => (
+                    <SelectItem key={opt.value} value={String(opt.value)}>{opt.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Time between each video upload when multiple videos are found.</p>
             </div>
 
             {/* Duration */}
