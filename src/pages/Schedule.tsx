@@ -93,7 +93,7 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   }, [useDuration, durationAmount, durationUnit]);
 
   const handleSave = () => {
-    onSave({ ...config, name, enabled, cronExpression, platforms, folderPath, endAt });
+    onSave({ ...config, name, enabled, cronExpression, platforms, folderPath, endAt, uploadIntervalMinutes });
   };
 
   const togglePlatform = (p: string) => setPlatforms(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
