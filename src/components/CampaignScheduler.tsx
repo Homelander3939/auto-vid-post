@@ -380,6 +380,7 @@ export default function CampaignScheduler() {
                 ref={videoInputRef}
                 type="file"
                 accept="video/*,.mp4,.mov,.avi,.mkv,.webm"
+                multiple
                 className="hidden"
                 onChange={handleVideoSelect}
               />
@@ -387,10 +388,16 @@ export default function CampaignScheduler() {
                 type="button"
                 onClick={() => videoInputRef.current?.click()}
                 className={`w-full flex flex-col items-center gap-2 rounded-lg border-2 border-dashed p-5 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
-                  videoFile ? 'border-primary/50 bg-primary/5' : 'border-border'
+                  (videoFile || isMultiFile) ? 'border-primary/50 bg-primary/5' : 'border-border'
                 }`}
               >
-                {videoFile ? (
+                {isMultiFile ? (
+                  <>
+                    <CheckCircle2 className="w-5 h-5 text-primary" />
+                    <span className="text-xs font-medium">{videoFiles.length} videos selected</span>
+                    <span className="text-[10px] text-muted-foreground">Select .txt files below to auto-fill metadata</span>
+                  </>
+                ) : videoFile ? (
                   <>
                     <CheckCircle2 className="w-5 h-5 text-primary" />
                     <span className="text-xs font-medium truncate max-w-full">{videoFile.name}</span>
@@ -398,10 +405,31 @@ export default function CampaignScheduler() {
                 ) : (
                   <>
                     <FileVideo className="w-5 h-5 text-muted-foreground" />
-                    <span className="text-xs font-medium">Select Video</span>
+                    <span className="text-xs font-medium">Select Video(s)</span>
+                    <span className="text-[10px] text-muted-foreground">Select multiple for batch scheduling</span>
                   </>
                 )}
               </button>
+
+              {/* Multi-file intensity selector */}
+              {isMultiFile && (
+                <div className="space-y-2">
+                  <Label className="text-xs flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5" /> Upload Intensity
+                  </Label>
+                  <Select value={String(intensityMinutes)} onValueChange={v => setIntensityMinutes(Number(v))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {INTENSITY_OPTIONS.map(opt => (
+                        <SelectItem key={opt.value} value={String(opt.value)}>{opt.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Videos will be spaced {intensityMinutes} minutes apart starting from the scheduled time.
+                  </p>
+                </div>
+              )}
             </>
           )}
 
