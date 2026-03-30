@@ -336,6 +336,7 @@ export async function saveSchedule(config: ScheduleConfig): Promise<ScheduleConf
     platforms: config.platforms,
     folder_path: config.folderPath,
     end_at: config.endAt,
+    upload_interval_minutes: config.uploadIntervalMinutes || 60,
   } as any;
 
   if (config.id) {
