@@ -449,11 +449,12 @@ export default function CampaignScheduler() {
             </div>
           )}
 
-          {/* Metadata fields */}
+          {/* Metadata fields — hide when multi-file since each has its own */}
+          {!isMultiFile && (
           <div className="space-y-3">
             <div className="space-y-1.5">
               <Label htmlFor="camp-title" className="text-xs">
-                Title {sourceMode === 'file' && <span className="text-destructive">*</span>}
+                Title {sourceMode === 'file' && !isMultiFile && <span className="text-destructive">*</span>}
                 {sourceMode === 'folder' && <span className="text-muted-foreground">(optional, auto from .txt)</span>}
               </Label>
               <Input
@@ -482,6 +483,8 @@ export default function CampaignScheduler() {
                 placeholder="tag1, tag2, tag3"
               />
             </div>
+          </div>
+          )}
 
             {/* Optional txt import */}
             <div className="flex items-center gap-2">
