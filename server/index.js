@@ -858,6 +858,7 @@ app.listen(PORT, () => {
   console.log(`\n🚀 Auto Vid Post — Local Server`);
   console.log(`   http://localhost:${PORT}`);
   console.log(`   Connected to backend: ${SUPABASE_URL}`);
-  console.log(`   Mode: Local Playwright automation\n`);
+  console.log(`   AI: LM Studio at ${LM_STUDIO_URL}`);
+  console.log(`   Mode: Local Playwright automation + Local AI\n`);
   setupCron();
 });
