@@ -1,52 +1,78 @@
 
 
-## Problem Analysis
+## Cloud Resource Analysis & Optimization Plan
 
-1. **Campaign "Saving..." hangs**: The `CampaignScheduler.saveAll()` uploads the video file to storage first (`uploadVideoFile`), which can be slow for large files. But the real issue is that after saving to `scheduled_uploads`, nothing triggers immediate processing — scheduled uploads only run when their `scheduled_at` time passes and the local server's cron picks them up. The user expected them to appear in the Upload Queue immediately, but they go to `scheduled_uploads` table (separate from `upload_jobs`).
+### What's Consuming Your $13.65 / $25 Free Cloud Balance
 
-2. **Schedule page is disconnected**: The `/schedule` page only configures a global recurring cron schedule (frequency/platforms). It has no way to plan individual scheduled uploads with folder paths, duration controls, or specific timing. The `CampaignScheduler` component (which does individual scheduling) lives only in the Dashboard's "Campaign" tab.
+Your Lovable Cloud costs come from three categories:
 
-3. **Missing duration controls**: No way to set how long a recurring schedule runs (X days/hours/weeks). The cron just runs forever once enabled.
+#### 1. **AI Gateway calls (~$0.44 of $1 AI balance used)**
+These edge functions call `ai.gateway.lovable.dev`:
+- **`ai-chat`** — AI Chat page in the web UI
+- **`telegram-ai-bot`** — Telegram bot AI responses (tool-calling, multi-turn)
+- **`cloud-browser-upload`** — AI vision for cloud-mode browser automation
 
-## Plan
+#### 2. **Edge Function invocations + compute (~main Cloud cost driver)**
+Every edge function call costs compute time:
+- **`process-uploads`** — triggered automatically from Dashboard on each upload
+- **`send-telegram`** — every notification (upload success, test messages)
+- **`cloud-browser-upload`** — long-running cloud browser sessions (biggest cost per call)
+- **`cloud-browser-status`** — polling for Browserbase session status
+- **`telegram-ai-bot`** — webhook for every Telegram message
 
-### 1. Fix Campaign Scheduler — ensure jobs appear in Upload Queue
+#### 3. **Database + Storage**
+- Database reads/writes for `upload_jobs`, `scheduled_uploads`, `schedule_config`, `app_settings`, `telegram_messages`
+- Video file storage in the `videos` bucket (used by AI Chat file uploads)
 
-- When a campaign entry's `scheduled_at` is in the past or within 1 minute, create the `upload_job` immediately (same as single upload) instead of only saving to `scheduled_uploads`.
-- For future-dated entries, save to `scheduled_uploads` as now — the local server cron already converts them to `upload_jobs` when due.
-- After saving, trigger local server `/api/process-pending` (same as single upload does) so immediate jobs start right away.
-- Add error handling and timeout feedback so "Saving..." doesn't hang forever.
+---
 
-### 2. Merge Schedule page with Campaign Scheduler
+### How to Stay Within $25/month Even at 300 Videos
 
-- Restructure the Schedule page into two sections:
-  - **Recurring Schedule**: the existing frequency/platform/cron config (keep as-is).
-  - **Scheduled Uploads**: embed the `CampaignScheduler` component here so users can plan individual uploads with specific dates from this page too.
-- Add duration controls to the recurring schedule: "Run for X days/hours/weeks" with an optional end date, stored in `schedule_config`. The local server cron checks this and stops processing after the end date.
+Since you use **Local Mode** (Playwright on your PC), the most expensive cloud features are already bypassed. Here's the breakdown:
 
-### 3. Add folder path support to Schedule page recurring cron
+| Resource | Current Use | Cost Impact | Action Needed |
+|----------|------------|-------------|---------------|
+| Cloud browser uploads | Only in cloud mode | **HIGH** | You already use local mode — no change needed |
+| AI Chat (web UI) | Each message = AI call | **MEDIUM** | Minimal use, or move to LM Studio |
+| Telegram AI bot | Each Telegram msg = AI call | **MEDIUM** | Already uses Gemini Flash (cheapest). Consider routing to LM Studio |
+| send-telegram | Per notification | **LOW** | ~$0.001 per call, 300/mo = negligible |
+| process-uploads | Polls for pending jobs | **LOW** | Only runs in cloud mode |
+| Database ops | CRUD on job tables | **VERY LOW** | Negligible even at 300 videos |
+| Storage | Only for AI Chat file uploads | **LOW** | Videos go direct to platforms, not stored in cloud |
 
-- Add a folder path input to the recurring schedule config (stored in `schedule_config` table).
-- When the cron fires, the local server reads the folder path from schedule config, scans for latest video + txt, creates an upload job automatically.
-- Migration: add `folder_path` and `end_at` columns to `schedule_config`.
+### Recommended Changes
 
-### 4. Local server — handle both scheduled_uploads and recurring cron with folder
+1. **Route Telegram AI bot through LM Studio instead of Lovable AI Gateway**
+   - The `telegram-ai-bot` edge function currently calls `ai.gateway.lovable.dev` (costs AI credits)
+   - Change it to call your local LM Studio (`http://192.168.50.33:1234`) directly
+   - Problem: Edge functions run in the cloud and can't reach your local network
+   - Solution: Either (a) expose LM Studio via a tunnel (Cloudflare Tunnel / ngrok) or (b) move Telegram bot processing to your local server which already has LM Studio access
 
-- `processScheduledUploads()`: already works, no major changes needed.
-- Add `processRecurringSchedule()`: reads `schedule_config`, checks if enabled + not past end date, scans folder, creates job, processes it.
-- Both run in the existing 1-minute cron loop.
+2. **Move AI Chat to use LM Studio locally**
+   - The `ai-chat` edge function also calls the AI Gateway
+   - Same solution: route through your local server's LM Studio endpoint
 
-### 5. Campaign saveAll reliability
+3. **Keep `send-telegram` as-is** — it's cheap (just forwards messages via the Telegram connector gateway, no AI involved)
 
-- Add a timeout wrapper around `uploadVideoFile` with user feedback.
-- Show progress state ("Uploading video 1/3...", "Creating schedule...") instead of just "Saving...".
-- If video upload fails, show clear error and don't hang.
+4. **Keep database as-is** — reads/writes are negligible cost
 
-### Files to modify
+5. **Never use Cloud Mode** — Browserbase sessions are by far the most expensive resource. Local Playwright is free.
 
-- `src/pages/Schedule.tsx` — add CampaignScheduler embed + duration controls + folder path
-- `src/components/CampaignScheduler.tsx` — fix immediate-job creation for past/near-future entries, add progress feedback
-- `src/lib/storage.ts` — add `folder_path` and `end_at` to ScheduleConfig, update save/get
-- `server/index.js` — add `processRecurringSchedule()` using folder from schedule_config
-- Migration: add `folder_path` (text) and `end_at` (timestamptz) columns to `schedule_config`
+### Projected Cost at 300 Videos/Month (After Optimization)
+
+| Resource | Monthly Cost |
+|----------|-------------|
+| Edge function calls (send-telegram × ~900 calls) | ~$0.50–1.00 |
+| Database operations | ~$0.10–0.30 |
+| Storage | ~$0 (videos not stored in cloud) |
+| AI Gateway | ~$0 (routed to LM Studio) |
+| **Total** | **~$1–2/month** |
+
+### Implementation Steps
+
+1. **Move Telegram AI bot logic to local server** — your `server/index.js` already has LM Studio integration. Add a Telegram webhook handler there that processes AI conversations locally instead of through the edge function. The edge function would just forward incoming webhooks to your local server.
+
+2. **Move AI Chat to call LM Studio** — update the web UI's AI Chat page to call your local server's LM Studio endpoint directly (or via a simple proxy endpoint on your local server) instead of invoking the `ai-chat` edge function.
+
+3. **No other changes needed** — everything else (uploads, scheduling, notifications) already runs locally or costs negligibly.
 
