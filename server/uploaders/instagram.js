@@ -1056,13 +1056,21 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       
       let captionFilled = false;
 
-      // Strategy 1: Keyboard-based approach (most reliable for contenteditable)
+      // Wait for caption field to appear in the dialog
+      await page.waitForSelector('[role="dialog"] [contenteditable="true"], [role="dialog"] textarea, [role="dialog"] [aria-label*="caption" i]', { timeout: 10000 })
+        .then(() => console.log('[Instagram] Caption field detected in dialog'))
+        .catch(() => console.warn('[Instagram] Caption field not detected by waitForSelector, trying anyway'));
+
+      // Strategy 1: Keyboard-based approach scoped to dialog (most reliable for contenteditable)
       const captionSelectors = [
+        '[role="dialog"] [aria-label="Write a caption..."]',
+        '[role="dialog"] [aria-label*="Write a caption"]',
+        '[role="dialog"] [aria-label*="caption" i]',
+        '[role="dialog"] textarea[aria-label*="caption" i]',
+        '[role="dialog"] textarea[placeholder*="caption" i]',
+        '[role="dialog"] [contenteditable="true"]',
+        '[role="dialog"] textarea',
         '[aria-label="Write a caption..."]',
-        '[aria-label*="Write a caption"]',
-        '[aria-label*="caption" i]',
-        'textarea[aria-label*="caption" i]',
-        'textarea[placeholder*="caption" i]',
         '[contenteditable="true"]',
         'textarea',
       ];
