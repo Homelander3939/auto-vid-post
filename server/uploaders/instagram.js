@@ -942,7 +942,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           // Try file input again after agent interaction
           fileInput = await page.$('input[type="file"]');
           if (fileInput) {
-            await fileInput.setInputFiles(videoPath);
+            await fileInput.setInputFiles(actualVideoPath);
             fileUploaded = true;
           }
         }
