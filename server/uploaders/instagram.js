@@ -861,7 +861,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     let fileInput = await page.$('input[type="file"]');
     if (fileInput) {
       try {
-        await fileInput.setInputFiles(videoPath);
+        await fileInput.setInputFiles(actualVideoPath);
         fileUploaded = true;
         console.log('[Instagram] Video set via direct file input');
       } catch (e) {
