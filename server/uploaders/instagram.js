@@ -14,10 +14,24 @@ function prepareVerticalVideo(videoPath) {
   const tempPath = videoPath.replace(ext, `_ig_vertical${ext}`);
 
   try {
-    // Probe dimensions
-    const probeCmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${videoPath}"`;
-    const probe = execSync(probeCmd, { encoding: 'utf-8' }).trim();
-    const [w, h] = probe.split(',').map(Number);
+    // Probe dimensions using spawn to avoid shell quoting issues on Windows
+    const { execFileSync } = require('child_process');
+
+    let w, h;
+    try {
+      const probe = execFileSync('ffprobe', [
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height',
+        '-of', 'csv=p=0',
+        videoPath
+      ], { encoding: 'utf-8', timeout: 30000 }).trim();
+      [w, h] = probe.split(',').map(Number);
+    } catch (probeErr) {
+      console.warn(`[Instagram] ffprobe failed: ${probeErr.message}`);
+      return { processedPath: videoPath, needsCleanup: false };
+    }
+
     console.log(`[Instagram] Source video dimensions: ${w}x${h}`);
 
     // Already portrait 9:16 — skip processing
@@ -26,20 +40,31 @@ function prepareVerticalVideo(videoPath) {
       return { processedPath: videoPath, needsCleanup: false };
     }
 
-    const ffmpegCmd = [
-      'ffmpeg', '-y', '-i', `"${videoPath}"`,
-      '-vf', '"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"',
+    // Use execFileSync to avoid all shell quoting issues on Windows
+    const vf = 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black';
+    const args = [
+      '-y', '-i', videoPath,
+      '-vf', vf,
       '-c:a', 'copy',
       '-movflags', '+faststart',
-      `"${tempPath}"`
-    ].join(' ');
+      tempPath
+    ];
 
     console.log(`[Instagram] Converting to 9:16 with black padding...`);
-    execSync(ffmpegCmd, { stdio: 'pipe', timeout: 120000 });
-    console.log(`[Instagram] Video converted to 1080x1920: ${tempPath}`);
-    return { processedPath: tempPath, needsCleanup: true };
+    console.log(`[Instagram] ffmpeg args: ${JSON.stringify(args)}`);
+    execFileSync('ffmpeg', args, { stdio: 'pipe', timeout: 120000 });
+
+    // Verify the output file exists and has size
+    if (fs.existsSync(tempPath) && fs.statSync(tempPath).size > 0) {
+      console.log(`[Instagram] Video converted to 1080x1920: ${tempPath} (${(fs.statSync(tempPath).size / 1024 / 1024).toFixed(1)} MB)`);
+      return { processedPath: tempPath, needsCleanup: true };
+    } else {
+      console.warn('[Instagram] ffmpeg produced empty or missing output file');
+      return { processedPath: videoPath, needsCleanup: false };
+    }
   } catch (err) {
-    console.warn(`[Instagram] ffmpeg conversion failed (using original): ${err.message}`);
+    console.error(`[Instagram] ffmpeg conversion FAILED: ${err.message}`);
+    if (err.stderr) console.error(`[Instagram] ffmpeg stderr: ${err.stderr.toString().slice(0, 500)}`);
     // Clean up partial file
     try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
     return { processedPath: videoPath, needsCleanup: false };
