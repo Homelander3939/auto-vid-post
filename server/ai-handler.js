@@ -4,8 +4,61 @@
 const fetch = require('node-fetch');
 
 const LM_STUDIO_URL = process.env.LM_STUDIO_URL || 'http://192.168.50.33:1234';
-const LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL || 'google/gemma-3-27b';
+let LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL || 'google/gemma-3-27b';
 const LM_STUDIO_API_KEY = process.env.LM_STUDIO_API_KEY || 'lm-studio';
+
+/**
+ * Resilient fetch wrapper for LM Studio.
+ * If the request fails (model changed/unloaded), it auto-discovers the currently
+ * loaded model and retries once. This prevents breakage when switching models.
+ */
+async function lmFetch(endpoint, bodyObj, retried = false) {
+  const url = `${LM_STUDIO_URL}${endpoint}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${LM_STUDIO_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(bodyObj),
+  }).catch(err => ({ ok: false, status: 0, _networkError: err }));
+
+  // If success, return
+  if (resp.ok) return resp;
+
+  // If already retried, throw
+  if (retried) {
+    const errText = resp._networkError ? resp._networkError.message : await resp.text().catch(() => '');
+    throw new Error(`LM Studio error (${resp.status || 'network'}): ${errText}`);
+  }
+
+  // Try to discover the currently loaded model
+  console.warn(`[AI] LM Studio request failed (status ${resp.status || 'network error'}), discovering loaded model...`);
+  try {
+    const modelsResp = await fetch(`${LM_STUDIO_URL}/v1/models`, {
+      headers: { 'Authorization': `Bearer ${LM_STUDIO_API_KEY}` },
+    });
+    if (modelsResp.ok) {
+      const modelsData = await modelsResp.json();
+      const loaded = modelsData.data?.filter(m => m.id && m.object === 'model');
+      if (loaded && loaded.length > 0) {
+        const newModel = loaded[0].id;
+        if (newModel !== LM_STUDIO_MODEL) {
+          console.log(`[AI] Model changed: ${LM_STUDIO_MODEL} → ${newModel}. Retrying...`);
+          LM_STUDIO_MODEL = newModel;
+          bodyObj.model = newModel;
+        }
+        return lmFetch(endpoint, bodyObj, true);
+      }
+    }
+  } catch (discoverErr) {
+    console.warn(`[AI] Model discovery failed: ${discoverErr.message}`);
+  }
+
+  // Discovery didn't help — throw original error
+  const errText = resp._networkError ? resp._networkError.message : await resp.text().catch(() => '');
+  throw new Error(`LM Studio unreachable or no model loaded. Check that LM Studio is running. (${errText})`);
+}
 
 /* ── Tool definitions for the AI ─────────────── */
 const tools = [
@@ -412,14 +465,7 @@ async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
       max_tokens: 2048,
     };
 
-    const resp = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LM_STUDIO_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    const resp = await lmFetch('/v1/chat/completions', body);
 
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
@@ -469,18 +515,7 @@ async function streamLMStudio(messages, supabase) {
     max_tokens: 2048,
   };
 
-  const resp = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${LM_STUDIO_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`LM Studio error ${resp.status}`);
-  }
+  const resp = await lmFetch('/v1/chat/completions', body);
 
   const data = await resp.json();
   const choice = data.choices?.[0];
@@ -498,38 +533,24 @@ async function streamLMStudio(messages, supabase) {
     }
 
     // Follow-up call (streaming)
-    const streamResp = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LM_STUDIO_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: LM_STUDIO_MODEL,
-        messages: fullMessages,
-        stream: true,
-        temperature: 0.7,
-        max_tokens: 2048,
-      }),
+    const streamResp = await lmFetch('/v1/chat/completions', {
+      model: LM_STUDIO_MODEL,
+      messages: fullMessages,
+      stream: true,
+      temperature: 0.7,
+      max_tokens: 2048,
     });
 
     return streamResp;
   }
 
   // No tool calls — return streaming response
-  const streamResp = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${LM_STUDIO_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: LM_STUDIO_MODEL,
-      messages: fullMessages,
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 2048,
-    }),
+  const streamResp = await lmFetch('/v1/chat/completions', {
+    model: LM_STUDIO_MODEL,
+    messages: fullMessages,
+    stream: true,
+    temperature: 0.7,
+    max_tokens: 2048,
   });
 
   return streamResp;
