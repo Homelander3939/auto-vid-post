@@ -533,38 +533,24 @@ async function streamLMStudio(messages, supabase) {
     }
 
     // Follow-up call (streaming)
-    const streamResp = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LM_STUDIO_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: LM_STUDIO_MODEL,
-        messages: fullMessages,
-        stream: true,
-        temperature: 0.7,
-        max_tokens: 2048,
-      }),
+    const streamResp = await lmFetch('/v1/chat/completions', {
+      model: LM_STUDIO_MODEL,
+      messages: fullMessages,
+      stream: true,
+      temperature: 0.7,
+      max_tokens: 2048,
     });
 
     return streamResp;
   }
 
   // No tool calls — return streaming response
-  const streamResp = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${LM_STUDIO_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: LM_STUDIO_MODEL,
-      messages: fullMessages,
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 2048,
-    }),
+  const streamResp = await lmFetch('/v1/chat/completions', {
+    model: LM_STUDIO_MODEL,
+    messages: fullMessages,
+    stream: true,
+    temperature: 0.7,
+    max_tokens: 2048,
   });
 
   return streamResp;
