@@ -515,18 +515,7 @@ async function streamLMStudio(messages, supabase) {
     max_tokens: 2048,
   };
 
-  const resp = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${LM_STUDIO_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`LM Studio error ${resp.status}`);
-  }
+  const resp = await lmFetch('/v1/chat/completions', body);
 
   const data = await resp.json();
   const choice = data.choices?.[0];
