@@ -465,14 +465,7 @@ async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
       max_tokens: 2048,
     };
 
-    const resp = await fetch(`${LM_STUDIO_URL}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LM_STUDIO_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    const resp = await lmFetch('/v1/chat/completions', body);
 
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
