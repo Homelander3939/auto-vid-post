@@ -525,7 +525,6 @@ async function processScheduledUploads() {
 }
 
 // --- Recurring schedule: process ALL schedule configs ---
-const lastRecurringRunKeys = {};
 
 function generateMetadataFromFilename(filename) {
   // Strip extension
