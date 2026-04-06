@@ -255,7 +255,15 @@ async function assessYouTubePostPublishState(page) {
     const hasPublished =
       text.includes('video published') ||
       text.includes('your video is uploaded') ||
-      text.includes('published on youtube');
+      text.includes('published on youtube') ||
+      text.includes('your short is live') ||
+      text.includes('your shorts is live') ||
+      text.includes('short published') ||
+      text.includes('video is live') ||
+      text.includes('your video is now live') ||
+      text.includes('published successfully') ||
+      text.includes('published to youtube') ||
+      text.includes('your video is live');
     const hasProcessing =
       text.includes('video processing') ||
       text.includes('finish processing before your video is public') ||
@@ -516,15 +524,37 @@ async function waitForPublishConfirmation(page, timeoutMs = 15000) {
   while (Date.now() - started < timeoutMs) {
     const published = await page.evaluate(() => {
       const text = (document.body?.innerText || '').toLowerCase();
-      return (
+      const url = window.location.href;
+      const textMatch =
         text.includes('video published') ||
         text.includes('checks complete') ||
         text.includes('your video is uploaded') ||
         text.includes('video processing') ||
         text.includes('finish processing before your video is public') ||
         text.includes('no issues found') ||
-        text.includes('uploaded and is being processed')
-      );
+        text.includes('uploaded and is being processed') ||
+        // YouTube Shorts / newer Studio confirmation messages
+        text.includes('your short is live') ||
+        text.includes('your shorts is live') ||
+        text.includes('short published') ||
+        text.includes('video is live') ||
+        text.includes('your video is now live') ||
+        text.includes('published successfully') ||
+        text.includes('published to youtube') ||
+        text.includes('your video is live');
+      // After publishing, YouTube Studio often redirects away from the upload dialog
+      // back to the main Studio dashboard — treat that as a success signal.
+      // Use URL parsing to avoid substring-match false positives.
+      const redirectedFromUpload = (() => {
+        try {
+          const u = new URL(url);
+          return (
+            u.hostname === 'studio.youtube.com' &&
+            !u.pathname.startsWith('/upload')
+          );
+        } catch { return false; }
+      })();
+      return textMatch || redirectedFromUpload;
     }).catch(() => false);
 
     if (published) return true;
@@ -1171,9 +1201,18 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       publicSelected = await selectVisibilityPublic(page);
 
       if (publicSelected) {
-        // Verify the Public radio is actually checked before proceeding
-        await page.waitForTimeout(800);
-        const confirmed = await page.evaluate(() => {
+        // Verify the Public radio is actually checked before proceeding.
+        // Wait longer to let YouTube's React state flush after the click.
+        await page.waitForTimeout(2000);
+
+        // First, try the fast Playwright-native isChecked() path which handles aria-checked correctly.
+        const confirmedViaLocator = await page.locator('[role="radio"]')
+          .filter({ hasText: /^public/i })
+          .first()
+          .isChecked({ timeout: 2000 })
+          .catch(() => false);
+
+        const confirmed = confirmedViaLocator || await page.evaluate(() => {
           function deepQueryAll(root) {
             const results = [];
             results.push(...Array.from(root.querySelectorAll('[role="radio"], tp-yt-paper-radio-button, ytcp-radio-button')));
@@ -1185,9 +1224,14 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
           for (const r of deepQueryAll(document)) {
             const text = (r.textContent || '').toLowerCase().trim();
             if (!text.startsWith('public')) continue;
-            const checked = r.getAttribute('aria-checked') === 'true' || r.checked === true;
+            const checked =
+              r.getAttribute('aria-checked') === 'true' ||
+              r.getAttribute('aria-selected') === 'true' ||
+              r.checked === true;
             const inner = r.querySelector('input[type="radio"]');
-            const innerChecked = inner ? (inner.checked || inner.getAttribute('aria-checked') === 'true') : false;
+            const innerChecked = inner
+              ? (inner.checked || inner.getAttribute('aria-checked') === 'true')
+              : false;
             if (checked || innerChecked) return true;
           }
           return false;
@@ -1210,6 +1254,46 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
     // ===== PHASE 7: PUBLISH =====
     console.log('[YouTube] Publishing...');
+
+    // Guard: verify the done-button actually says "Publish" (not "Save").
+    // When visibility is Private/Unlisted, the button says "Save" which saves a draft.
+    // If it says "Save", retry Public visibility selection before clicking.
+    const doneButtonLabel = await page.evaluate(() => {
+      function getButtonText(root, selector) {
+        const el = root.querySelector(selector);
+        if (el) {
+          // YouTube Studio uses a `label` attribute on ytcp-button as the primary text source
+          const attr = el.getAttribute('label') || el.getAttribute('aria-label') || '';
+          return (attr || el.textContent || el.innerText || '').toLowerCase().trim();
+        }
+        for (const child of root.querySelectorAll('*')) {
+          if (child.shadowRoot) {
+            const found = getButtonText(child.shadowRoot, selector);
+            if (found) return found;
+          }
+        }
+        return '';
+      }
+      return getButtonText(document, '#done-button') || getButtonText(document, '#publish-button');
+    }).catch(() => '');
+
+    if (doneButtonLabel && doneButtonLabel.includes('save') && !doneButtonLabel.includes('publish')) {
+      console.warn(`[YouTube] Done button says "${doneButtonLabel}" — visibility is not Public. Retrying Public selection...`);
+      for (let r = 0; r < 3; r++) {
+        await page.waitForTimeout(1500);
+        const reselected = await selectVisibilityPublic(page);
+        if (reselected) {
+          await page.waitForTimeout(2000);
+          const newLabel = await page.evaluate(() => {
+            const btn = document.querySelector('#done-button') || document.querySelector('#publish-button');
+            const attr = btn?.getAttribute('label') || btn?.getAttribute('aria-label') || '';
+            return (attr || btn?.textContent || btn?.innerText || '').toLowerCase().trim();
+          }).catch(() => '');
+          if (newLabel.includes('publish')) break;
+        }
+      }
+    }
+
     await smartClick(page, ['#done-button', '#publish-button'], 'Publish');
 
     // Also try JS click

@@ -1610,9 +1610,51 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
       const captionTruncated = caption.slice(0, MAX_CAPTION_LENGTH);
 
-      // Strategy 0: Direct textarea value set — most reliable for native <textarea> elements.
-      // Instagram Posts use a <textarea> (not a DraftJS contenteditable), so setting .value
-      // directly and dispatching an input event is the most reliable approach for them.
+      // Strategy 0 (Playwright locator.fill): fires *trusted* input events that React processes
+      // correctly. Instagram's event handlers may check event.isTrusted and silently ignore
+      // programmatic DOM events dispatched via JavaScript, causing the caption to appear set in
+      // the DOM but never registered in React state. Playwright's fill() uses the browser's
+      // native input mechanism which generates trusted events.
+      if (!captionFilled) {
+        try {
+          const dialogLoc = page.locator('[role="dialog"]');
+          const fieldCandidates = [
+            dialogLoc.locator('textarea[aria-label*="caption" i]').first(),
+            dialogLoc.locator('textarea[placeholder*="caption" i]').first(),
+            dialogLoc.locator('textarea').first(),
+            dialogLoc.locator('[contenteditable="true"][aria-label*="caption" i]').first(),
+            dialogLoc.locator('[contenteditable="true"]').first(),
+          ];
+          for (const loc of fieldCandidates) {
+            if (captionFilled) break;
+            if (!await loc.isVisible({ timeout: 1000 }).catch(() => false)) continue;
+            try {
+              await loc.click();
+              await page.waitForTimeout(300);
+              await loc.fill(captionTruncated);
+              await page.waitForTimeout(500);
+              // Verify via Playwright's inputValue() (textarea) or textContent() (contenteditable)
+              let val = '';
+              try {
+                val = await loc.inputValue();
+              } catch {
+                val = await loc.textContent().catch(() => '');
+              }
+              if ((val || '').trim().length > 0) {
+                captionFilled = true;
+                console.log('[Instagram] Caption filled via Playwright locator.fill() (trusted events)');
+              }
+            } catch (fillErr) {
+              // Non-fatal — try next candidate
+            }
+          }
+        } catch (e) {
+          console.warn('[Instagram] Playwright locator fill strategy failed:', e.message);
+        }
+      }
+
+      // Strategy 1 (formerly 0): Direct textarea native value setter — backup for environments
+      // where Playwright's fill does not reach the element. Instagram Posts use a <textarea>.
       if (!captionFilled) {
         captionFilled = await page.evaluate((text) => {
           const dialog = document.querySelector('[role="dialog"]') || document.body;
@@ -1623,7 +1665,11 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             if (rect.height < 5 || style.display === 'none' || style.visibility === 'hidden') continue;
             ta.focus();
             ta.click();
-            // Use the native input value setter to bypass React's synthetic event handling
+            // Clear React's value tracker so it detects the change (React caches the last value
+            // to avoid unnecessary re-renders; without clearing it, the input event may be ignored)
+            const tracker = ta._valueTracker;
+            if (tracker) tracker.setValue('');
+            // Use the native input value setter to bypass React's synthetic event system
             const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
             if (nativeInputValueSetter) {
               nativeInputValueSetter.call(ta, text);
@@ -1639,7 +1685,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         if (captionFilled) console.log('[Instagram] Caption filled via direct textarea value set');
       }
 
-      // Strategy 1: ClipboardEvent paste — most reliable for React/DraftJS contenteditable fields.
+      // Strategy 2: ClipboardEvent paste — most reliable for React/DraftJS contenteditable fields.
       // DraftJS listens to 'paste' events and handles them natively, whereas keyboard.type() can
       // fail when event handling is intercepted or the field is not in the expected focused state.
       // IMPORTANT: DraftJS processes the paste event asynchronously (React batches state updates),
@@ -1709,7 +1755,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         }
       }
 
-      // Strategy 2: Keyboard-based approach — fallback for non-DraftJS textareas
+      // Strategy 3: Keyboard-based approach — fallback for non-DraftJS textareas
       if (!captionFilled) {
         for (const sel of captionSelectors) {
           if (captionFilled) break;
@@ -1751,7 +1797,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         }
       }
 
-      // Strategy 3: DOM execCommand (deprecated but still works in some headless builds)
+      // Strategy 4: DOM execCommand (deprecated but still works in some headless builds)
       if (!captionFilled) {
         captionFilled = await page.evaluate((text) => {
           const editors = document.querySelectorAll(
@@ -1773,7 +1819,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         if (captionFilled) console.log('[Instagram] Caption filled via execCommand');
       }
 
-      // Strategy 4: Agent fallback
+      // Strategy 5: Agent fallback
       if (!captionFilled) {
         console.warn('[Instagram] Could not fill caption with standard methods, trying agent...');
         try {
