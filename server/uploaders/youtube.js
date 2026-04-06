@@ -337,6 +337,70 @@ async function assessYouTubePostPublishState(page) {
   };
 }
 
+async function selectVisibilityPublic(page) {
+  // Strategy 1: Playwright locators — pierce Shadow DOM natively (same pattern as selectAudienceNotMadeForKids)
+  try {
+    const radio = page.locator('[role="radio"]').filter({ hasText: /^public$/i }).first();
+    if (await radio.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await radio.click();
+      return true;
+    }
+  } catch {}
+
+  try {
+    const radio = page.locator('[role="radio"]').filter({ hasText: /^public\b/i }).first();
+    if (await radio.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await radio.click();
+      return true;
+    }
+  } catch {}
+
+  // Strategy 2: CSS attribute selectors via page.$() (Playwright pierces one Shadow DOM level)
+  const clicked = await smartClick(page, [
+    'ytcp-radio-button[name="PUBLIC"]',
+    'tp-yt-paper-radio-button[name="PUBLIC"]',
+    '[name="PUBLIC"]',
+    'input[name="PUBLIC"]',
+  ], 'Public');
+
+  if (clicked) return true;
+
+  // Strategy 3: Deep Shadow DOM traversal via page.evaluate
+  return page.evaluate(() => {
+    function deepQueryAll(root) {
+      const results = [];
+      const candidates = Array.from(root.querySelectorAll(
+        'ytcp-radio-button, tp-yt-paper-radio-button, [role="radio"], label'
+      ));
+      results.push(...candidates);
+      const all = root.querySelectorAll('*');
+      for (const el of all) {
+        if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot));
+      }
+      return results;
+    }
+
+    const nodes = deepQueryAll(document);
+    for (const node of nodes) {
+      const text = (node.textContent || node.innerText || '').toLowerCase().trim();
+      if (!text) continue;
+      // Match nodes whose text starts with "public" (e.g. "Public" or "Public\nEveryone can watch…")
+      // but does NOT contain "unlisted" or "private" (to avoid mis-matching descriptions)
+      if (
+        text.startsWith('public') &&
+        !text.includes('unlisted') &&
+        !text.includes('private') &&
+        !text.includes('schedule')
+      ) {
+        const inner = node.querySelector('button, input[type="radio"], [role="radio"]') || node;
+        inner.click();
+        return true;
+      }
+    }
+    return false;
+  }).catch(() => false);
+}
+
 async function selectAudienceNotMadeForKids(page) {
   // Strategy 1: Playwright getByLabel / getByText — these pierce Shadow DOM natively
   try {
@@ -1101,22 +1165,46 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
     // ===== PHASE 6: SET VISIBILITY TO PUBLIC =====
     console.log('[YouTube] Setting visibility to Public...');
-    await smartClick(page, [
-      'tp-yt-paper-radio-button[name="PUBLIC"]',
-      '#radioLabel:has-text("Public")',
-      '[name="PUBLIC"]',
-    ], 'Public');
+    let publicSelected = false;
+    for (let vAttempt = 0; vAttempt < 4 && !publicSelected; vAttempt++) {
+      if (vAttempt > 0) await page.waitForTimeout(1200);
+      publicSelected = await selectVisibilityPublic(page);
 
-    // Also try clicking by evaluating
-    await page.evaluate(() => {
-      const radios = document.querySelectorAll('tp-yt-paper-radio-button, [role="radio"]');
-      for (const r of radios) {
-        if (r.textContent?.toLowerCase().includes('public') && !r.textContent?.toLowerCase().includes('unlisted')) {
-          r.click();
-          break;
+      if (publicSelected) {
+        // Verify the Public radio is actually checked before proceeding
+        await page.waitForTimeout(800);
+        const confirmed = await page.evaluate(() => {
+          function deepQueryAll(root) {
+            const results = [];
+            results.push(...Array.from(root.querySelectorAll('[role="radio"], tp-yt-paper-radio-button, ytcp-radio-button')));
+            for (const el of root.querySelectorAll('*')) {
+              if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot));
+            }
+            return results;
+          }
+          for (const r of deepQueryAll(document)) {
+            const text = (r.textContent || '').toLowerCase().trim();
+            if (!text.startsWith('public')) continue;
+            const checked = r.getAttribute('aria-checked') === 'true' || r.checked === true;
+            const inner = r.querySelector('input[type="radio"]');
+            const innerChecked = inner ? (inner.checked || inner.getAttribute('aria-checked') === 'true') : false;
+            if (checked || innerChecked) return true;
+          }
+          return false;
+        }).catch(() => false);
+
+        if (!confirmed) {
+          console.warn(`[YouTube] Public not confirmed selected on attempt ${vAttempt + 1}, retrying...`);
+          publicSelected = false;
+        } else {
+          console.log('[YouTube] Visibility set to Public and confirmed');
         }
       }
-    });
+    }
+
+    if (!publicSelected) {
+      console.warn('[YouTube] Could not confirm Public visibility selection; proceeding anyway (video may default to Private on YouTube)');
+    }
     await page.waitForTimeout(1500);
     cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
 
