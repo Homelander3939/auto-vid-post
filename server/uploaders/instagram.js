@@ -1483,14 +1483,26 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         // Use specific checks to avoid false positives from the Crop/Filter screens
         const hasCaptionField = !!dialog.querySelector(
           '[aria-label="Write a caption..."], [aria-label*="Write a caption"], ' +
-          'textarea[placeholder*="caption" i]'
+          'textarea[placeholder*="caption" i], [contenteditable="true"][aria-label*="caption" i]'
         );
         const captionFieldVisible = (() => {
-          const el = dialog.querySelector('[aria-label="Write a caption..."], [aria-label*="Write a caption"]');
-          if (!el) return false;
-          const rect = el.getBoundingClientRect();
-          const style = window.getComputedStyle(el);
-          return rect.height > 20 && style.display !== 'none' && style.visibility !== 'hidden';
+          // Check contenteditable caption fields
+          const ceSelectors = ['[aria-label="Write a caption..."]', '[aria-label*="Write a caption"]', '[contenteditable="true"][aria-label*="caption" i]'];
+          for (const sel of ceSelectors) {
+            const el = dialog.querySelector(sel);
+            if (!el) continue;
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            if (rect.height > 5 && style.display !== 'none' && style.visibility !== 'hidden') return true;
+          }
+          // Also check textarea caption fields (Instagram Posts may use <textarea>)
+          const ta = dialog.querySelector('textarea[placeholder*="caption" i]');
+          if (ta) {
+            const rect = ta.getBoundingClientRect();
+            const style = window.getComputedStyle(ta);
+            if (rect.height > 5 && style.display !== 'none' && style.visibility !== 'hidden') return true;
+          }
+          return false;
         })();
         return hasCaptionField && captionFieldVisible || text.includes('write a caption');
       }).catch(() => false);
@@ -1543,12 +1555,18 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     }
 
     // ===== PHASE 5: ADD CAPTION =====
-    // First verify we're on the caption/share screen
+    // First verify we're on the caption/share screen — look for the caption INPUT field
+    // specifically (not generic "share" text, which is present on all screens via Share button)
     const onCaptionScreen = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]') || document.body;
+      const hasCaptionField = !!dialog.querySelector(
+        '[aria-label="Write a caption..."], [aria-label*="Write a caption"], ' +
+        '[aria-label*="caption" i], textarea[placeholder*="caption" i], ' +
+        '[contenteditable="true"]'
+      );
+      if (hasCaptionField) return true;
       const text = (document.body?.innerText || '').toLowerCase();
-      return text.includes('caption') || text.includes('write a caption') || 
-             text.includes('share') || text.includes('create new post') ||
-             !!document.querySelector('[aria-label*="caption" i], textarea[placeholder*="caption" i], [contenteditable="true"]');
+      return text.includes('write a caption') || text.includes('create new post');
     }).catch(() => false);
 
     if (!onCaptionScreen) {
@@ -1590,13 +1608,43 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         'textarea',
       ];
 
+      const captionTruncated = caption.slice(0, MAX_CAPTION_LENGTH);
+
+      // Strategy 0: Direct textarea value set — most reliable for native <textarea> elements.
+      // Instagram Posts use a <textarea> (not a DraftJS contenteditable), so setting .value
+      // directly and dispatching an input event is the most reliable approach for them.
+      if (!captionFilled) {
+        captionFilled = await page.evaluate((text) => {
+          const dialog = document.querySelector('[role="dialog"]') || document.body;
+          const textareas = Array.from(dialog.querySelectorAll('textarea'));
+          for (const ta of textareas) {
+            const rect = ta.getBoundingClientRect();
+            const style = window.getComputedStyle(ta);
+            if (rect.height < 5 || style.display === 'none' || style.visibility === 'hidden') continue;
+            ta.focus();
+            ta.click();
+            // Use the native input value setter to bypass React's synthetic event handling
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+            if (nativeInputValueSetter) {
+              nativeInputValueSetter.call(ta, text);
+            } else {
+              ta.value = text;
+            }
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            ta.dispatchEvent(new Event('change', { bubbles: true }));
+            if ((ta.value || '').trim().length > 0) return true;
+          }
+          return false;
+        }, captionTruncated);
+        if (captionFilled) console.log('[Instagram] Caption filled via direct textarea value set');
+      }
+
       // Strategy 1: ClipboardEvent paste — most reliable for React/DraftJS contenteditable fields.
       // DraftJS listens to 'paste' events and handles them natively, whereas keyboard.type() can
       // fail when event handling is intercepted or the field is not in the expected focused state.
       // IMPORTANT: DraftJS processes the paste event asynchronously (React batches state updates),
       // so we must NOT check the DOM content immediately after dispatching — instead we wait and
       // verify in a separate evaluate call.
-      const captionTruncated = caption.slice(0, MAX_CAPTION_LENGTH);
       if (!captionFilled) {
         for (const sel of captionSelectors) {
           if (captionFilled) break;
