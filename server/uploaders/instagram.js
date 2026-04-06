@@ -449,11 +449,14 @@ async function ensureInstagramPostFlow(page) {
     });
 
     return {
+      // Only trust indicators that are specific to the file-upload surface.
+      // 'new post' / 'create new post' must NOT be included here — they match
+      // the always-visible sidebar "New post" nav button (via document.body fallback)
+      // and the create-type dropdown title, causing a false-positive that skips
+      // the actual "Post" selection step.
       ready:
         !!scope.querySelector('input[type="file"]') ||
         hasSelectFromComputer ||
-        text.includes('create new post') ||
-        text.includes('new post') ||
         text.includes('drag photos and videos here') ||
         text.includes('drag videos here') ||
         text.includes('select from computer') ||
@@ -488,13 +491,12 @@ async function ensureInstagramPostFlow(page) {
       if (!isVisible(node)) continue;
       const text = normalize(node.textContent);
       const label = normalize(node.getAttribute('aria-label'));
-      // Match "Post" but avoid matching "New post" (which is the create button itself) or "Repost"
+      // Match the "Post" menu item in the create dropdown.
+      // Do NOT include 'new post' or 'create new post' — those match the sidebar nav
+      // button and the file-upload dialog title, causing the wrong element to be clicked.
       if (
         text === 'post' ||
-        text === 'new post' ||
-        text === 'create new post' ||
-        label === 'post' ||
-        label === 'new post'
+        label === 'post'
       ) {
         return clickNode(node);
       }
@@ -536,13 +538,13 @@ async function ensureInstagramPostFlow(page) {
   const postFlowReady = await page.waitForFunction(() => {
     const scope = document.querySelector('[role="dialog"]') || document.body;
     const text = (scope.innerText || scope.textContent || '').toLowerCase();
+    // Do NOT include 'new post' or 'create new post' — they match sidebar nav / dropdown
+    // title and resolve immediately before the file-upload surface has actually appeared.
     return (
       !!scope.querySelector('input[type="file"]') ||
       text.includes('select from computer') ||
       text.includes('drag photos and videos here') ||
       text.includes('drag videos here') ||
-      text.includes('create new post') ||
-      text.includes('new post') ||
       text.includes('crop') ||
       text.includes('trim')
     );
@@ -585,10 +587,11 @@ async function waitForInstagramUploadSurface(page, maxWaitMs = 15000) {
           || value.includes('drag videos here');
       });
 
+      // Do NOT include 'new post' or 'create new post' — those strings appear in the
+      // always-visible sidebar nav and the create-type dropdown title, producing false
+      // positives before the actual file-upload surface (drag zone / file input) is open.
       const looksLikeCreateFlow =
         path.includes('/create/')
-        || text.includes('new post')
-        || text.includes('create new post')
         || text.includes('new reel')
         || text.includes('share to reels')
         || text.includes('reel details')
