@@ -1265,34 +1265,41 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     // ===== PHASE 3.5: SELECT 9:16 VERTICAL ASPECT RATIO =====
     console.log('[Instagram] Attempting to select 9:16 aspect ratio in crop screen...');
 
-    const trySelectInstagramCropRatio = async () => page.evaluate(() => {
-      const scope = document.querySelector('[role="dialog"]') || document.body;
-      const isVisible = (node) => {
-        if (!node) return false;
-        const rect = node.getBoundingClientRect();
-        const style = window.getComputedStyle(node);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-      };
-      const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
-      const clickNode = (node) => {
-        const target = node.closest('button, label, [role="button"], [role="menuitem"], [role="tab"]') || node;
-        target.click();
-      };
+    const trySelectInstagramCropRatio = async () => {
+      // Find the 9:16 button and return its center coordinates for a Playwright-level click
+      const nodeBox = await page.evaluate(() => {
+        const scope = document.querySelector('[role="dialog"]') || document.body;
+        const isVisible = (node) => {
+          if (!node) return false;
+          const rect = node.getBoundingClientRect();
+          const style = window.getComputedStyle(node);
+          return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-      const nodes = Array.from(scope.querySelectorAll('button, label, div[role="button"], span[role="button"], [role="menuitem"], [role="tab"], span, div'));
+        const nodes = Array.from(scope.querySelectorAll('button, label, div[role="button"], span[role="button"], [role="menuitem"], [role="tab"], span, div'));
 
-      for (const node of nodes) {
-        if (!isVisible(node)) continue;
-        const text = normalize(node.textContent);
-        const label = normalize(node.getAttribute('aria-label'));
-        if (text === '9:16' || text.includes('9:16') || label.includes('9:16') || label.includes('9 16')) {
-          clickNode(node);
-          return '9:16';
+        for (const node of nodes) {
+          if (!isVisible(node)) continue;
+          const text = normalize(node.textContent);
+          const label = normalize(node.getAttribute('aria-label'));
+          if (text === '9:16' || text.includes('9:16') || label.includes('9:16') || label.includes('9 16')) {
+            const target = node.closest('button, label, [role="button"], [role="menuitem"], [role="tab"]') || node;
+            const rect = target.getBoundingClientRect();
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, found: true };
+          }
         }
-      }
+        return { found: false };
+      }).catch(() => ({ found: false }));
 
+      if (nodeBox?.found) {
+        // Use Playwright mouse click (dispatches full mousedown/mouseup/click chain)
+        // which is more reliable than a bare DOM .click() for React event handlers
+        await page.mouse.click(nodeBox.x, nodeBox.y);
+        return '9:16';
+      }
       return '';
-    }).catch(() => '');
+    };
 
     // Step 1: First try to find the aspect ratio toggle button in the bottom-left of the crop screen
     // and click it to open the aspect ratio picker
@@ -1374,8 +1381,14 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       const cropToggleClicked = await openCropPicker();
       if (cropToggleClicked) {
         console.log('[Instagram] Opened crop ratio picker from lower-left control');
-        await page.waitForTimeout(1200);
+        // Wait for the aspect-ratio panel animation to fully complete
+        await page.waitForTimeout(2500);
         selectedAspectRatio = await trySelectInstagramCropRatio();
+        // Retry once if the first attempt didn't register (e.g., panel still animating)
+        if (!selectedAspectRatio) {
+          await page.waitForTimeout(1000);
+          selectedAspectRatio = await trySelectInstagramCropRatio();
+        }
       }
     }
 
@@ -1432,9 +1445,21 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
       // Stop early if we've reached the caption/share screen
       const alreadyOnCaption = await page.evaluate(() => {
-        const text = (document.body?.innerText || '').toLowerCase();
-        return text.includes('write a caption') || text.includes('caption') ||
-               !!document.querySelector('[aria-label*="caption" i], textarea[placeholder*="caption" i]');
+        const dialog = document.querySelector('[role="dialog"]') || document.body;
+        const text = (dialog.innerText || dialog.textContent || '').toLowerCase();
+        // Use specific checks to avoid false positives from the Crop/Filter screens
+        const hasCaptionField = !!dialog.querySelector(
+          '[aria-label="Write a caption..."], [aria-label*="Write a caption"], ' +
+          'textarea[placeholder*="caption" i]'
+        );
+        const captionFieldVisible = (() => {
+          const el = dialog.querySelector('[aria-label="Write a caption..."], [aria-label*="Write a caption"]');
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return rect.height > 20 && style.display !== 'none' && style.visibility !== 'hidden';
+        })();
+        return hasCaptionField && captionFieldVisible || text.includes('write a caption');
       }).catch(() => false);
       if (alreadyOnCaption) {
         console.log('[Instagram] Already on caption screen, stopping Next clicks');
@@ -1542,26 +1567,33 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           if (!visible) continue;
           
           await el.click();
-          await page.waitForTimeout(500);
+          await page.waitForTimeout(800);
           // Select all existing text and replace
           await page.keyboard.press('Control+a');
           await page.waitForTimeout(200);
           await page.keyboard.press('Backspace');
           await page.waitForTimeout(200);
           // Type the caption character by character for reliability
-          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 10 });
-          await page.waitForTimeout(500);
+          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 20 });
+          await page.waitForTimeout(800);
           
-          // Verify the caption was actually typed
-          const typed = await page.evaluate((selector) => {
-            const el = document.querySelector(selector);
-            if (!el) return '';
-            return el.textContent || el.value || '';
-          }, sel).catch(() => '');
+          // Verify caption was typed — use a content-based scan of all dialog
+          // contenteditables/textareas instead of re-querying by the original selector,
+          // because Instagram may update the element's aria-label after text is entered
+          // (causing the original selector to no longer match).
+          const typed = await page.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"]') || document.body;
+            const candidates = Array.from(dialog.querySelectorAll('[contenteditable="true"], textarea'));
+            for (const el of candidates) {
+              const content = (el.textContent || el.value || '').trim();
+              if (content.length > 0) return content;
+            }
+            return '';
+          }).catch(() => '');
           
           if (typed.length > 0) {
             captionFilled = true;
-            console.log(`[Instagram] Caption filled via ${sel} (${typed.length} chars written)`);
+            console.log(`[Instagram] Caption filled via ${sel} (${typed.length} chars verified)`);
           } else {
             console.log(`[Instagram] Caption via ${sel} may not have been applied, trying next method...`);
           }
