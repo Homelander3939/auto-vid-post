@@ -1254,12 +1254,19 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     // ===== PHASE 6: SET VISIBILITY TO PUBLIC =====
     console.log('[YouTube] Setting visibility to Public...');
     let publicSelected = false;
-    for (let vAttempt = 0; vAttempt < 4 && !publicSelected; vAttempt++) {
-      if (vAttempt > 0) await page.waitForTimeout(1200);
+    for (let vAttempt = 0; vAttempt < 6 && !publicSelected; vAttempt++) {
+      if (vAttempt > 0) {
+        await page.waitForTimeout(1500);
+        // On retries, try scrolling to make visibility options visible
+        await page.evaluate(() => {
+          const dialog = document.querySelector('ytcp-uploads-dialog, [role="dialog"]');
+          if (dialog) dialog.scrollTop = dialog.scrollHeight;
+        }).catch(() => {});
+        await page.waitForTimeout(500);
+      }
       publicSelected = await selectVisibilityPublic(page);
 
       if (publicSelected) {
-        // Verify the Public radio is actually checked before proceeding
         await page.waitForTimeout(800);
         const confirmed = await page.evaluate(() => {
           function deepQueryAll(root) {
@@ -1290,8 +1297,25 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       }
     }
 
+    // Last resort: use Telegram to ask human to set Public manually
     if (!publicSelected) {
-      console.warn('[YouTube] Could not confirm Public visibility selection; proceeding anyway (video may default to Private on YouTube)');
+      console.warn('[YouTube] Could not auto-select Public visibility — asking for human help...');
+      try {
+        await requestHumanObstacleHelp(
+          page,
+          credentials,
+          'Could not select "Public" visibility. Please click the "Public" radio button on this screen, then reply APPROVED.'
+        );
+        // After human intervention, re-verify
+        publicSelected = await selectVisibilityPublic(page).catch(() => false);
+        if (!publicSelected) {
+          // Even if we can't confirm, human said they did it, so proceed
+          publicSelected = true;
+          console.log('[YouTube] Proceeding after human confirmed Public visibility');
+        }
+      } catch (humanErr) {
+        console.warn('[YouTube] Human help for visibility failed:', humanErr.message);
+      }
     }
     await page.waitForTimeout(1500);
     cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
