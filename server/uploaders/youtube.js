@@ -655,7 +655,12 @@ async function isVideoTranscodingInProgress(page) {
     const text = (document.body?.innerText || '').toLowerCase();
     return (
       text.includes('processing up to hd') ||
-      (text.includes('processing') && /\d+\s*minutes? left/.test(text))
+      (text.includes('processing') && /\d+\s*minutes? left/.test(text)) ||
+      // "Checking 1%... 10 minutes left" — YouTube's checks phase
+      (text.includes('checking') && /\d+\s*%/.test(text)) ||
+      (/checking\s+\d+\s*%/.test(text)) ||
+      // Generic "X minutes left" with checking
+      (text.includes('checking') && /\d+\s*minutes? left/.test(text))
     );
   }).catch(() => false);
 }
