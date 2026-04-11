@@ -1,45 +1,34 @@
 
 
-## Fix Instagram Aspect Ratio + Missing Captions
+## Plan: Fix Instagram Caption Not Persisting After Share
 
-### Problem 1: Video still uploads at 4:3 on Instagram
-The current approach tries to click Instagram's crop/resize UI icons using DOM geometry detection, but Instagram uses unlabeled SVG icon buttons that change between versions. This approach has repeatedly failed.
+### Problem
+The caption text visually appears in the Instagram caption field during upload, but disappears from the published post. This indicates the text is rendered in the DOM but **not properly registered in Instagram's internal DraftJS/React state**. When "Share" is clicked, Instagram reads from its internal state (which is empty) and publishes without caption.
 
-**Solution: Pre-process the video with ffmpeg before uploading.**
-Instead of fighting Instagram's crop UI, convert the video to 9:16 (1080x1920) with black padding BEFORE the upload even starts. Instagram will then receive a properly formatted vertical video and won't crop it.
+### Root Cause Analysis
+Instagram's caption field is a **DraftJS contenteditable** editor. DraftJS maintains its own internal `EditorState` that is separate from the DOM. Methods like `element.textContent = ...` or even `ClipboardEvent` dispatch can update the visible DOM without updating DraftJS's internal model. When Share is clicked, Instagram serializes from its internal state, not the DOM.
 
-- In `server/uploaders/instagram.js`, before the file upload step, run `ffmpeg` to:
-  - Detect the source video dimensions
-  - Scale it to fit within 1080x1920 while preserving aspect ratio
-  - Add black padding to fill the remaining space
-  - Save to a temp file, use that for upload
-- Remove the entire Phase 3.5 (aspect ratio selection) since it's no longer needed — the video is already correctly formatted
-- Clean up the temp file after upload completes
+The current code tries multiple strategies but likely hits false-positive verification: it checks if `textContent` or `value` has content, but that only proves the DOM was updated — not that DraftJS accepted the input.
 
-### Problem 2: Description/hashtags not appearing on uploaded videos
-The caption-filling code exists but the selectors may be failing silently on Instagram's current UI. The screenshots show posts with no description at all.
+### Fix Strategy
 
-**Solution: Improve caption filling reliability:**
-- Add a `page.waitForSelector` step before attempting caption fill to ensure the caption field is actually rendered
-- Scope caption selectors to within the dialog (`[role="dialog"]`) to avoid matching wrong elements
-- Add verification logging: after filling, log whether text was actually written
-- If all DOM strategies fail, use the AI agent with a clearer prompt that includes the actual caption text
+**File: `server/uploaders/instagram.js` (Phase 5 caption filling)**
 
-### Files to Change
+1. **Use Playwright's clipboard API for reliable paste** — Instead of manually constructing a `ClipboardEvent` (which DraftJS may ignore because `clipboardData` is read-only in some browsers), use Playwright's built-in clipboard:
+   - Focus the caption field
+   - Use `page.evaluate(() => navigator.clipboard.writeText(text))` to set clipboard
+   - Then use `page.keyboard.press('Control+v')` to trigger a real paste that DraftJS processes natively
 
-1. **`server/uploaders/instagram.js`**
-   - Add ffmpeg pre-processing function at the top
-   - Call it before Phase 3 (file upload) to create a 9:16 padded video
-   - Remove Phase 3.5 entirely (crop/resize icon detection)
-   - Improve Phase 5 caption filling: scope selectors to dialog, add wait step, better verification
-   - Add temp file cleanup in a finally block
+2. **Add a post-fill settle + re-verify step** — After filling, wait 1.5s, then click somewhere neutral in the dialog (e.g. the video preview area), then click back on the caption field and check its content. This forces DraftJS to flush any pending state updates and reveals whether the text was actually persisted in internal state.
 
-### Technical Detail
+3. **Improve keyboard.type fallback** — Increase the per-character delay from 20ms to 35ms, and add intermediate verification every ~500 chars to ensure DraftJS is keeping up. If text stops appearing, re-focus and continue.
 
-ffmpeg command for black-padded 9:16 conversion:
-```
-ffmpeg -i input.mp4 -vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" -c:a copy output.mp4
-```
+4. **Add a final caption verification before Share** — Right before clicking Share, read the caption field content one more time. If it's empty despite earlier success, retry the fill with keyboard.type as a last resort.
 
-This scales the video to fit within 1080x1920 while keeping its original aspect ratio, then pads with black bars to fill the full 9:16 frame. The user confirmed they want black padding.
+### Technical Details
+
+- The primary change targets lines ~1686-1760 (ClipboardEvent paste strategy) and adds a pre-Share verification around line ~1855
+- The `page.keyboard.press('Control+v')` approach generates real browser-level keyboard events that DraftJS handles through its native paste handler, unlike synthetic `ClipboardEvent` which can be rejected
+- No changes to any other uploader (YouTube, TikTok) or to the upload flow phases (login, create, crop, share)
+- Caption length limit (2200 chars) remains unchanged
 
