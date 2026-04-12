@@ -1522,6 +1522,10 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     // The cover-photo step renders many non-header "Next" nodes, so restrict matching to the
     // visible header band and prefer the rightmost candidate there.
     const NEXT_BUTTON_POLL_INTERVAL_MS = 400;
+    // How long to wait after the caption screen appears before trying to interact with elements.
+    // Instagram's React re-renders the caption screen DOM after the initial mount, so element
+    // handles obtained too early become stale ("not attached to DOM") before they can be clicked.
+    const CAPTION_SCREEN_STABILIZATION_DELAY_MS = 2500;
     const findDialogHeaderNextButton = (options = {}) => page.evaluate(({ includeDisabled = false } = {}) => {
       const dialogEl = document.querySelector('[role="dialog"]') || document.body;
       const dialogRect = dialogEl.getBoundingClientRect();
@@ -1908,7 +1912,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         .catch(() => console.warn('[Instagram] Caption field not detected by waitForSelector, trying anyway'));
       // Give React/Instagram time to finish DOM transitions after navigating to the caption screen.
       // Without this, element handles obtained via page.$() may become detached before we can click them.
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(CAPTION_SCREEN_STABILIZATION_DELAY_MS);
 
       captionSelectors = [
         '[role="dialog"] [aria-label="Write a caption..."]',
