@@ -1530,7 +1530,12 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       const HEADER_BAND_MAX_PX = 140;
       const HEADER_BAND_MIN_PX = 72;
       const HEADER_BAND_HEIGHT_RATIO = 0.22;
+      const NEXT_BUTTON_POLL_INTERVAL_MS = 400;
+      // Keep the final bare div selector because Instagram sometimes renders the header action as
+      // a plain div with only text; later filters narrow this broad scan back to the top header band.
       const nextCandidateSelector = 'button, [role="button"], a, span, div[tabindex], div';
+      // Prefer true interactive ancestors when available, but still allow a plain text wrapper as a
+      // last resort because Instagram occasionally omits role/tabindex on the header action.
       const headerBandMaxTop = Math.min(
         HEADER_BAND_MAX_PX,
         Math.max(HEADER_BAND_MIN_PX, dialogRect.height * HEADER_BAND_HEIGHT_RATIO),
@@ -1559,6 +1564,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         seen.add(candidate);
 
         if (!candidate.matches(interactiveSelector)) {
+          // Skip wrapper nodes when a deeper matching child exists so coordinate clicks land on the
+          // innermost visible control instead of an outer layout container with the same text.
           const hasMatchingChild = Array.from(candidate.querySelectorAll(nextCandidateSelector))
             .some((child) => child !== candidate && matchesNextLabel(child));
           if (hasMatchingChild) continue;
@@ -1609,7 +1616,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       while ((Date.now() - startedAt) < timeoutMs) {
         const candidate = await findDialogHeaderNextButton({ includeDisabled: true });
         if (candidate && !candidate.disabled) return true;
-        await page.waitForTimeout(400);
+        await page.waitForTimeout(NEXT_BUTTON_POLL_INTERVAL_MS);
       }
       return false;
     };
