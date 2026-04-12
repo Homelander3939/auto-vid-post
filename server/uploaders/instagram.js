@@ -1906,6 +1906,9 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       )
         .then(() => console.log('[Instagram] Caption field detected in dialog'))
         .catch(() => console.warn('[Instagram] Caption field not detected by waitForSelector, trying anyway'));
+      // Give React/Instagram time to finish DOM transitions after navigating to the caption screen.
+      // Without this, element handles obtained via page.$() may become detached before we can click them.
+      await page.waitForTimeout(2500);
 
       captionSelectors = [
         '[role="dialog"] [aria-label="Write a caption..."]',
@@ -1979,7 +1982,12 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             const visible = await el.isVisible().catch(() => false);
             if (!visible) continue;
 
-            await el.click();
+            // Re-query immediately before clicking to avoid a stale element handle — Instagram's
+            // React may re-render the caption screen components between our visibility check and
+            // the click, causing "Element is not attached to the DOM" errors.
+            const freshEl = await page.$(sel);
+            if (!freshEl) continue;
+            await freshEl.click();
             await page.waitForTimeout(600);
 
             // Clear existing content
