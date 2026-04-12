@@ -1524,6 +1524,9 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     const findDialogHeaderNextButton = (options = {}) => page.evaluate(({ includeDisabled = false } = {}) => {
       const dialogEl = document.querySelector('[role="dialog"]') || document.body;
       const dialogRect = dialogEl.getBoundingClientRect();
+      // Instagram keeps the header action row within a shallow top band of the dialog.
+      // Use a capped ratio so we still match the header on both short and tall upload modals
+      // without drifting into the cover-photo carousel controls below it.
       const HEADER_BAND_MAX_PX = 140;
       const HEADER_BAND_MIN_PX = 72;
       const HEADER_BAND_HEIGHT_RATIO = 0.22;
@@ -1535,7 +1538,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       const interactiveSelector = 'button, [role="button"], a, [tabindex]';
       const seen = new Set();
       const candidates = [];
-      const clampToElementBounds = (value, min, max) => Math.min(max, Math.max(min, value));
+      const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
       const allEls = dialogEl.querySelectorAll(nextCandidateSelector);
       const matchesNextLabel = (el) => {
         const raw = (el.textContent || '').trim().toLowerCase();
@@ -1580,8 +1583,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         const disabled = candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true';
         if (!includeDisabled && disabled) continue;
 
-        const x = clampToElementBounds(rect.left + rect.width / 2, rect.left + 1, rect.right - 1);
-        const y = clampToElementBounds(rect.top + rect.height / 2, rect.top + 1, rect.bottom - 1);
+        const x = clamp(rect.left + rect.width / 2, rect.left + 1, rect.right - 1);
+        const y = clamp(rect.top + rect.height / 2, rect.top + 1, rect.bottom - 1);
         const topEl = document.elementFromPoint(x, y);
         if (topEl && !(candidate === topEl || candidate.contains(topEl) || topEl.contains(candidate))) continue;
 
@@ -1595,8 +1598,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }
 
       if (candidates.length === 0) return null;
-      // Prefer the highest match in the header band; when several share that row, choose the
-      // furthest-right one so we keep targeting the header action instead of left-side controls.
+      // Sort by header height first (top ascending), then by horizontal position (left descending)
+      // so ties resolve to the furthest-right header action instead of left-side controls.
       candidates.sort((a, b) => (a.top - b.top) || (b.left - a.left));
       return candidates[0];
     }, options).catch(() => null);
