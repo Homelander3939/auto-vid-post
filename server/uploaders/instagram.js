@@ -1567,7 +1567,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       // Strategy 1: Scope the click to within the dialog to avoid background page interactions.
       // Instagram renders "Next" as various element types (button, div, a, span) depending on the screen.
       // Only click if the button is NOT disabled to avoid false-positive "clicked" on the Edit screen.
-      let clicked = await page.evaluate(() => {
+      // Returns true only if an enabled Next/Continue button was found and clicked.
+      const clickNextInDialog = () => page.evaluate(() => {
         const dialogEl = document.querySelector('[role="dialog"]') || document.body;
         // Search ALL elements inside dialog for "Next" text — Instagram uses different tags on different screens
         const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex]');
@@ -1585,23 +1586,13 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         return false;
       });
 
-      // On the Edit screen, if the button appears disabled in Strategy 1, wait a bit more and retry
+      let clicked = await clickNextInDialog();
+
+      // On the Edit screen, if the button is still disabled after the 50s waitForFunction, give it
+      // one more 3-second grace period (handles edge cases where the button enables just after timeout)
       if (!clicked && onEditScreen) {
         await page.waitForTimeout(3000);
-        clicked = await page.evaluate(() => {
-          const dialogEl = document.querySelector('[role="dialog"]') || document.body;
-          const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex]');
-          for (const el of allEls) {
-            const text = (el.textContent || '').trim();
-            const label = (el.getAttribute('aria-label') || '').toLowerCase();
-            if ((text.toLowerCase() === 'next' || text.toLowerCase() === 'continue' || label === 'next' || label === 'continue') && text.length < 20) {
-              if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
-              el.click();
-              return true;
-            }
-          }
-          return false;
-        });
+        clicked = await clickNextInDialog();
       }
 
       // Strategy 2: Playwright-level click with dialog-scoped selector
